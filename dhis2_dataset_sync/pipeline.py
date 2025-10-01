@@ -1,16 +1,17 @@
 import logging
 import time
 from datetime import datetime
+from itertools import product
 from pathlib import Path
 
 import pandas as pd
 import polars as pl
 import requests
+from d2d_library.db_queue import Queue
+from d2d_library.dhis2_extract_handlers import DHIS2Extractor
+from d2d_library.dhis2_org_unit_aligner import DHIS2PyramidAligner
+from d2d_library.dhis2_push_handlers import DHIS2Pusher
 from dateutil.relativedelta import relativedelta
-from db_queue import Queue
-from dhis2_extract_handlers import DHIS2Extractor
-from dhis2_org_unit_aligner import DHIS2PyramidAligner
-from dhis2_push_handlers import DHIS2Pusher
 from openhexa.sdk import current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
 from openhexa.toolbox.dhis2.dataframe import get_datasets
@@ -69,27 +70,27 @@ def dhis2_dataset_sync(run_ou_sync: bool = True, run_extract_data: bool = True, 
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_dataset_sync"
 
     try:
-        pyramid_ready = sync_organisation_units(
-            pipeline_path=pipeline_path,
-            run_task=run_ou_sync,
-        )
+        # pyramid_ready = sync_organisation_units(
+        #     pipeline_path=pipeline_path,
+        #     run_task=run_ou_sync,
+        # )
 
-        datasets_ready = sync_dataset_organisation_units(
-            pipeline_path=pipeline_path,
-            run_task=run_ou_sync,  # only run if OU sync was run
-            wait=pyramid_ready,
-        )
+        # datasets_ready = sync_dataset_organisation_units(
+        #     pipeline_path=pipeline_path,
+        #     run_task=run_ou_sync,  # only run if OU sync was run
+        #     wait=pyramid_ready,
+        # )
 
-        extract_data(
-            pipeline_path=pipeline_path,
-            run_task=run_extract_data,
-            wait=datasets_ready,
-        )
+        # extract_data(
+        #     pipeline_path=pipeline_path,
+        #     run_task=run_extract_data,
+        #     wait=datasets_ready,
+        # )
 
         push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
-            wait=datasets_ready,
+            wait=True,  # datasets_ready,
         )
 
     except Exception as e:
@@ -385,12 +386,12 @@ def extract_data(
         return
 
     current_run.log_info("Data elements extraction task started.")
+    configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
 
     # load configuration
     extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
 
-    # connect to source DHIS2 instance
-    # No cache for data extraction
+    # connect to source DHIS2 instance (No cache for data extraction)
     dhis2_client = connect_to_dhis2(
         connection_str=extract_config["SETTINGS"]["SOURCE_DHIS2_CONNECTION"], cache_dir=None
     )
@@ -401,7 +402,6 @@ def extract_data(
     # initialize queue
     db_path = pipeline_path / "configuration" / ".queue.db"
     push_queue = Queue(db_path)
-    # push_queue.reset()
 
     try:
         months_lag = extract_config["SETTINGS"].get("NUMBER_MONTHS_WINDOW", 3)  # default 3 months window
@@ -416,16 +416,11 @@ def extract_data(
     except Exception as e:
         raise Exception(f"Error in start/end date configuration: {e}") from e
 
+    # limits
+    dhis2_client.data_value_sets.MAX_DATA_ELEMENTS = 100
+    dhis2_client.data_value_sets.MAX_ORG_UNITS = 100
+
     try:
-        download_settings = extract_config["SETTINGS"].get("MODE", None)
-        if download_settings is None:
-            download_settings = "DOWNLOAD_REPLACE"
-            current_run.log_warning(f"No 'MODE' found in extraction settings. Set default: {download_settings}")
-
-        # limits
-        dhis2_client.data_value_sets.MAX_DATA_ELEMENTS = 100
-        dhis2_client.data_value_sets.MAX_ORG_UNITS = 100
-
         # Get periods
         start_period = period_from_string(start)
         end_period = period_from_string(end)
@@ -434,63 +429,41 @@ def extract_data(
             if str(start_period) < str(end_period)
             else [str(start_period)]
         )
-
-        # Setup extractor
-        dhis2_extractor = DHIS2Extractor(dhis2_client=dhis2_client, download_mode=download_settings)
-        current_run.log_info(f"Download MODE: {extract_config['SETTINGS']['MODE']} from: {start} to {end}")
-
-        # Data Elements
-        data_element_extracts = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])
-        if len(data_element_extracts) == 0:
-            current_run.log_info("No data elements to extract.")
-            return
-
-        # loop over the available extract configurations
-        for idx, extract in enumerate(data_element_extracts):
-            org_units_level = extract.get("ORG_UNITS_LEVEL", None)
-            extract_id = extract.get("EXTRACT_UID")
-            data_element_uids = extract.get("UIDS", [])
-
-            if org_units_level is None:
-                current_run.log_warning(f"No 'ORG_UNITS_LEVEL' found for extract position : {idx}. Skipped.")
-                continue
-
-            # get org units from the filtered pyramid
-            org_units = source_pyramid[source_pyramid["level"] == org_units_level]["id"].to_list()
-            current_run.log_info(
-                f"Starting extract {idx + 1} (ID: {extract_id}) "
-                f"with {len(data_element_uids)} data elements across {len(org_units)} org units "
-                f"(level {org_units_level})."
-            )
-
-            # TODO: Handle extract frequency if needed in the future
-            # extract_periods = Use start-end to compute all periods based on frequency
-
-            # run data elements extraction per period
-            if extract_id is None:
-                current_run.log_warning(f"No 'EXTRACT_UID' found for extract position : {idx + 1}. This is required.")
-                continue
-
-            for period in extract_periods:
-                extract_path = dhis2_extractor.data_elements.download_period(
-                    data_elements=data_element_uids,
-                    org_units=org_units,
-                    period=period,
-                    output_dir=pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}",
-                )
-                if extract_path is not None:
-                    push_queue.enqueue(f"{extract_id}|{extract_path}")
-
-            # We can continue adding other data extractions (indicators, reporting rates, events, etc..)
-
-        current_run.log_info("Extract process finished.")
     except Exception as e:
-        raise Exception(f"Extract task error : {e}") from e
-    finally:
-        push_queue.enqueue("FINISH")
+        raise Exception(f"Error in start/end date configuration: {e!s}") from e
+
+    download_settings = extract_config["SETTINGS"].get("MODE", None)
+    if download_settings is None:
+        download_settings = "DOWNLOAD_REPLACE"
+        current_run.log_warning(f"No 'MODE' found in extraction settings. Set default: {download_settings}")
+
+    # Setup extractor
+    # See docs about return_existing_file impact.
+    dhis2_extractor = DHIS2Extractor(
+        dhis2_client=dhis2_client, download_mode=download_settings, return_existing_file=False
+    )
+    current_run.log_info(f"Download MODE: {extract_config['SETTINGS']['MODE']} from: {start} to {end}")
+
+    handle_data_element_extracts(
+        pipeline_path=pipeline_path,
+        dhis2_extractor=dhis2_extractor,
+        data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
+        source_pyramid=source_pyramid,
+        extract_periods=extract_periods,
+        push_queue=push_queue,
+    )
+
+    handle_dataset_extracts(
+        pipeline_path=pipeline_path,
+        dhis2_extractor=dhis2_extractor,
+        dataset_extracts=extract_config["REPORTING_RATES"].get("EXTRACTS", []),
+        source_pyramid=source_pyramid,
+        extract_periods=extract_periods,
+        push_queue=push_queue,
+    )
 
 
-@dhis2_dataset_sync.task
+# @dhis2_dataset_sync.task
 def push_data(
     pipeline_path: Path,
     run_task: bool = True,
@@ -529,46 +502,216 @@ def push_data(
         dry_run=dry_run,
         max_post=max_post,
     )
-    try:
-        while True:
-            next_period = push_queue.peek()  # Don't remove it yet, just take a look at the next period
-            if next_period == "FINISH":
-                push_queue.dequeue()  # remove FINISH marker
-                break
 
-            if not next_period:
-                current_run.log_info("Push data process: waiting for updates")
-                time.sleep(60 * int(push_wait))  # wait for <push_wait> minutes
-                continue
+    # loop over the queue
+    while True:
+        next_period = push_queue.peek()
+        if next_period == "FINISH":
+            push_queue.dequeue()  # remove marker if present
+            break
 
-            try:
-                extract_id, extract_path = split_on_pipe(next_period)
-                extract_data = read_parquet_extract(parquet_file=extract_path)
-            except Exception as e:
-                current_run.log_warning(f"Error while reading the extracts file: {extract_path}. Error: {e}")
-                continue
+        if not next_period:
+            current_run.log_info("Push data process: waiting for updates")
+            time.sleep(60 * int(push_wait))
+            continue
 
-            extract = next((e for e in config["DATA_ELEMENTS"]["EXTRACTS"] if e["EXTRACT_UID"] == extract_id), {})
+        try:
+            # Parse item and read extract
+            extract_id, extract_dir = split_on_pipe(next_period)
+            extract_path = Path(extract_dir)
+            extract_data = read_parquet_extract(parquet_file=extract_path)
+            short_path = f"{extract_path.parent.name}/{extract_path.name}"
 
-            # NOTE: The mapping MUST BE pipeline specific (this is Non-generic)
-            df_mapped = apply_data_element_extract_config(df=extract_data, extract=extract)
+            # Determine data type
+            data_type = extract_data["DATA_TYPE"].unique()[0]
 
-            try:
-                current_run.log_info(f"Push extract {extract_id if extract_id else ''}: {extract_path}.")
+            # Dispatch to a push handler
+            if data_type == "DATA_ELEMENT":
+                current_run.log_info(f"Pushing data elements extract {extract_id}: {short_path}.")
+                extract_config = next(
+                    (e for e in config["DATA_ELEMENTS"]["EXTRACTS"] if e["EXTRACT_UID"] == extract_id), {}
+                )
+                # NOTE: The mapping MUST BE pipeline specific (this is Non-generic)
+                df_mapped = apply_data_element_extract_config(df=extract_data, extract_config=extract_config)
                 pusher.data_elements.push_data(df_data=df_mapped)
 
-                # The process finished, so we remove the period from the queue
-                _ = push_queue.dequeue()
-                current_run.log_info(f"Extracts pushed for extract {extract_id}: {extract_path}.")
-            except Exception as e:
-                current_run.log_warning(f"Error while pushing data for extract {extract_id} :{extract_path}. {e}")
+            elif data_type == "REPORTING_RATE":
+                current_run.log_info(f"Pushing reporting rates extract {extract_id}: {short_path}.")
+                extract_config = next(
+                    (e for e in config["REPORTING_RATES"]["EXTRACTS"] if e["EXTRACT_UID"] == extract_id), {}
+                )
+                # NOTE: The mapping MUST BE pipeline specific (this is Non-generic)
+                df_mapped = apply_reporting_rates_extract_config(df=extract_data, extract_config=extract_config)
+                pusher.reporting_rates.push_data(df_data=df_mapped)
+
+            elif data_type == "INDICATOR":
+                current_run.log_info(f"Pushing indicator extract {extract_id}: {short_path}.")
+                extract_config = next(
+                    (e for e in config["INDICATORS"]["EXTRACTS"] if e["EXTRACT_UID"] == extract_id), {}
+                )
+                # NOTE: The mapping MUST BE pipeline specific (this is Non-generic)
+                df_mapped = apply_indicators_extract_config(df=extract_data, extract_config=extract_config)
+                pusher.indicators.push_data(df_data=df_mapped)
+
+            else:
+                current_run.log_warning(f"Unknown DATA_TYPE '{data_type}' in extract: {short_path}. Skipping.")
+                push_queue.dequeue()  # remove unknown item
                 continue
 
-    except Exception as e:
-        raise Exception(f"Error connecting to target DHIS2: {e}") from e
+            # Success → dequeue
+            push_queue.dequeue()
+            current_run.log_info(f"Data push finished for extract: {short_path}.")
+
+        except Exception as e:
+            current_run.log_error(f"Fatal error for extract {extract_id} ({short_path}): {e!s}")
+            raise  # crash on error
+
+    current_run.log_info("Push task finished.")
 
 
-def apply_data_element_extract_config(df: pd.DataFrame, extract: dict) -> pd.DataFrame:
+def handle_data_element_extracts(
+    pipeline_path: Path,
+    dhis2_extractor: DHIS2Extractor,
+    data_element_extracts: list,
+    source_pyramid: pd.DataFrame,
+    extract_periods: list[str],
+    push_queue: Queue,
+):
+    """Handles data elements extracts based on the configuration."""
+    if len(data_element_extracts) == 0:
+        current_run.log_info("No data elements to extract.")
+        return
+    current_run.log_info("Starting data element extracts.")
+    try:
+        # loop over the available extract configurations
+        for idx, extract in enumerate(data_element_extracts):
+            extract_id = extract.get("EXTRACT_UID")
+            org_units_level = extract.get("ORG_UNITS_LEVEL", None)
+            data_element_uids = extract.get("UIDS", [])
+
+            if extract_id is None:
+                current_run.log_warning(
+                    f"No 'EXTRACT_UID' found for extract position : {idx}. This is required, extract skipped."
+                )
+                continue
+
+            if org_units_level is None:
+                current_run.log_warning(f"No 'ORG_UNITS_LEVEL' found for extract position : {idx}, extract skipped.")
+                continue
+
+            if len(data_element_uids) == 0:
+                current_run.log_warning(f"No data elements found for extract position : {idx}, extract skipped.")
+                continue
+
+            # get org units from the filtered pyramid
+            org_units = source_pyramid[source_pyramid["level"] == org_units_level]["id"].to_list()
+            current_run.log_info(
+                f"Starting extract {idx + 1} (ID: {extract_id}) "
+                f"with {len(data_element_uids)} data elements across {len(org_units)} org units "
+                f"(level {org_units_level})."
+            )
+
+            # run data elements extraction per period
+            for period in extract_periods:
+                try:
+                    extract_path = dhis2_extractor.data_elements.download_period(
+                        data_elements=data_element_uids,
+                        org_units=org_units,
+                        period=period,
+                        output_dir=pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}",
+                    )
+                    if extract_path is not None:
+                        push_queue.enqueue(f"{extract_id}|{extract_path}")
+
+                except Exception as e:
+                    current_run.log_warning(
+                        f"Extract {extract_id} download failed for period {period}, skipping to next extract."
+                    )
+                    logging.error(f"Extract {extract_id} - period {period} error: {e!s}")
+                    break  # skip to next extract
+
+            current_run.log_info(f"Extract {extract_id} finished.")
+
+    finally:
+        push_queue.enqueue("FINISH")
+
+
+def handle_dataset_extracts(
+    pipeline_path: Path,
+    dhis2_extractor: DHIS2Extractor,
+    dataset_extracts: list,
+    source_pyramid: pd.DataFrame,
+    extract_periods: list[str],
+    push_queue: Queue,
+):
+    """Handles dataset extracts based on the configuration."""
+    if len(dataset_extracts) == 0:
+        current_run.log_info("No data elements to extract.")
+        return
+    current_run.log_info("Starting reporting rates extracts.")
+    try:
+        # loop over the available extract configurations
+        for idx, extract in enumerate(dataset_extracts):
+            extract_id = extract.get("EXTRACT_UID")
+            org_units_level = extract.get("ORG_UNITS_LEVEL", None)
+            dataset_definitions = extract.get("DATASETS", [])
+
+            if extract_id is None:
+                current_run.log_warning(f"No 'EXTRACT_UID' found for extract position : {idx}. This is required.")
+                continue
+
+            if org_units_level is None:
+                current_run.log_warning(f"No 'ORG_UNITS_LEVEL' found for extract position : {idx}. Skipped.")
+                continue
+
+            if len(dataset_definitions) == 0:
+                current_run.log_warning(f"No datasets found for extract position : {idx}. Skipped.")
+                continue
+
+            dataset_products = []
+            for ds_id in dataset_definitions:
+                metrics = dataset_definitions.get(ds_id, [])
+                if len(metrics) > 0:
+                    combinations = [f"{ds}.{metric}" for ds, metric in product([ds_id], metrics)]
+                    dataset_products.extend(combinations)
+
+            # get org units from the filtered pyramid
+            org_units = source_pyramid[source_pyramid["level"] == org_units_level]["id"].to_list()
+            current_run.log_info(
+                f"Starting extract {idx} (ID: {extract_id}) "
+                f"with {len(dataset_products)} reporting rates across {len(org_units)} org units "
+                f"(level {org_units_level})."
+            )
+
+            # run data elements extraction per period
+            finished_periods = True
+            for period in extract_periods:
+                try:
+                    extract_path = dhis2_extractor.reporting_rates.download_period(
+                        reporting_rates=dataset_products,
+                        org_units=org_units,
+                        period=period,
+                        output_dir=pipeline_path / "data" / "extracts" / "reporting_rates" / f"extract_{extract_id}",
+                    )
+                    if extract_path is not None:
+                        push_queue.enqueue(f"{extract_id}|{extract_path}")
+
+                except Exception as e:
+                    current_run.log_warning(
+                        f"Extract {extract_id} download failed for period {period}, skipping to next extract."
+                    )
+                    finished_periods = False
+                    logging.error(f"Extract {extract_id} - period {period} error: {e!s}")
+                    break  # skip to next extract
+
+            if finished_periods:
+                current_run.log_info(f"Extract {extract_id} finished.")
+
+    finally:
+        push_queue.enqueue("FINISH")
+
+
+def apply_data_element_extract_config(df: pd.DataFrame, extract_config: dict) -> pd.DataFrame:
     """Applies data element mappings to the extracted data.
 
     It also filters data elements based on category option combo (COC) if specified in the extract configuration.
@@ -577,7 +720,7 @@ def apply_data_element_extract_config(df: pd.DataFrame, extract: dict) -> pd.Dat
     ----------
     df : pd.DataFrame
         DataFrame containing the extracted data.
-    extract : dict
+    extract_config : dict
         This is a dictionary containing the extract mappings.
 
     Returns
@@ -585,17 +728,17 @@ def apply_data_element_extract_config(df: pd.DataFrame, extract: dict) -> pd.Dat
     pd.DataFrame
         DataFrame with mapped data elements.
     """
-    if len(extract) == 0:
+    if len(extract_config) == 0:
         current_run.log_warning("No extract details provided, skipping data element mappings.")
         return df
 
-    extract_mappings = extract.get("MAPPINGS", {})
+    extract_mappings = extract_config.get("MAPPINGS", {})
     if len(extract_mappings) == 0:
         current_run.log_warning("No extract mappings provided, skipping data element mappings.")
         return df
 
     # Loop over the configured data element mappings to filter by COC/AOC if provided
-    current_run.log_info(f"Applying data element mappings for extract: {extract.get('EXTRACT_UID')}.")
+    current_run.log_info(f"Applying data element mappings for extract: {extract_config.get('EXTRACT_UID')}.")
     chunks = []
     uid_mappings = {}
     for uid, mapping in extract_mappings.items():
@@ -635,6 +778,49 @@ def apply_data_element_extract_config(df: pd.DataFrame, extract: dict) -> pd.Dat
         df_filtered["DX_UID"] = df_filtered.loc[:, "DX_UID"].replace(uid_mappings_clean)
 
     return df_filtered
+
+
+def apply_reporting_rates_extract_config(
+    df: pd.DataFrame,
+    extract_config: dict,
+) -> pd.DataFrame:
+    """Handles the mappings of reporting rates.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with mapped reporting rates.
+    """
+    if len(extract_config) == 0:
+        current_run.log_warning("No extract details provided, skipping data element mappings.")
+        return df
+
+    extract_mappings = extract_config.get("MAPPINGS", {})
+    if len(extract_mappings) == 0:
+        current_run.log_warning("No extract mappings provided, skipping data element mappings.")
+        return df
+
+    mapped_df = df.copy()
+    coc_default = "HllvX50cXC0"
+    aoc_default = "HllvX50cXC0"
+    mapped_df = mapped_df.fillna({"CATEGORY_OPTION_COMBO": coc_default, "ATTRIBUTE_OPTION_COMBO": aoc_default})
+
+    current_run.log_info(f"Applying reporting rate mappings for extract: {extract_config.get('EXTRACT_UID')}.")
+    for ds_id in extract_mappings:
+        mapping = extract_mappings.get(ds_id, {})
+        # Replace DX_UID based on RATE_TYPE
+        mask = mapped_df["DX_UID"] == ds_id
+        mapped_df.loc[mask, "DX_UID"] = mapped_df.loc[mask, "RATE_TYPE"].map(mapping)
+
+    return mapped_df
+
+
+def apply_indicators_extract_config(
+    df: pd.DataFrame,
+    extract_config: dict,
+):
+    """Handles the mappings of reporting rates."""
+    pass
 
 
 def split_on_pipe(s: str) -> tuple[str, str | None]:

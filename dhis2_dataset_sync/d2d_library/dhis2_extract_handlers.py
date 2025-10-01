@@ -48,7 +48,7 @@ class DataElementsExtractor:
                 output_dir=output_dir,
             )
         except Exception as e:
-            raise Exception(f"Extract download error : {e}") from e
+            raise Exception(f"Extract data elements download error : {e}") from e
 
     def _retrieve_data(self, data_elements: list[str], org_units: list[str], period: str) -> pd.DataFrame:
         if not self.extractor._valid_dhis2_period_format(period):
@@ -72,7 +72,9 @@ class IndicatorsExtractor:
     def __init__(self, extractor: "DHIS2Extractor"):
         self.extractor = extractor
 
-    def download_periods(self, indicators: list[str], org_units: list[str], periods: list[str], output_dir: Path):
+    def download_period(
+        self, indicators: list[str], org_units: list[str], period: str, output_dir: Path
+    ) -> Path | None:
         """Download and handle data extracts for the specified periods, saving them to the output directory.
 
         Parameters
@@ -81,10 +83,15 @@ class IndicatorsExtractor:
             List of DHIS2 indicators UIDs to extract.
         org_units : list[str]
             List of DHIS2 organization unit UIDs to extract data for.
-        periods : list[str]
-            List of DHIS2 periods to extract data for.
+        period : str
+            DHIS2 period (valid format) to extract data for.
         output_dir : Path
             Directory where extracted data files will be saved.
+
+        Returns
+        -------
+        Path | None
+            The path to the extracted data file, or None if no data was extracted.
 
         Raises
         ------
@@ -92,23 +99,22 @@ class IndicatorsExtractor:
             If an error occurs during the extract process.
         """
         try:
-            for period in periods:
-                current_run.log_info(f"Retrieving indicators extract for period : {period}")
-                self.extractor._handle_extract_for_period(
-                    handler=self,
-                    data_products=indicators,
-                    org_units=org_units,
-                    period=period,
-                    output_dir=output_dir,
-                )
+            current_run.log_info(f"Retrieving indicators extract for period : {period}")
+            return self.extractor._handle_extract_for_period(
+                handler=self,
+                indicators=indicators,
+                org_units=org_units,
+                period=period,
+                output_dir=output_dir,
+            )
         except Exception as e:
-            raise Exception(f"Extract download error : {e}") from e
+            raise Exception(f"Extract indicators download error : {e}") from e
 
     def _retrieve_data(self, indicators: list[str], org_units: list[str], period: str) -> pd.DataFrame:
         if not self.extractor._valid_dhis2_period_format(period):
             raise ValueError(f"Invalid DHIS2 period format: {period}")
         try:
-            response = self.extractor.analytics.get(
+            response = self.extractor.dhis2_client.analytics.get(
                 indicators=indicators,
                 periods=[period],
                 org_units=org_units,
@@ -127,7 +133,9 @@ class ReportingRatesExtractor:
     def __init__(self, extractor: "DHIS2Extractor"):
         self.extractor = extractor
 
-    def download_periods(self, reporting_rates: list[str], org_units: list[str], periods: list[str], output_dir: Path):
+    def download_period(
+        self, reporting_rates: list[str], org_units: list[str], period: str, output_dir: Path
+    ) -> Path | None:
         """Download and handle data extracts for the specified periods, saving them to the output directory.
 
         Parameters
@@ -136,10 +144,15 @@ class ReportingRatesExtractor:
             List of DHIS2 reporting rates UIDs.RATE to extract.
         org_units : list[str]
             List of DHIS2 organization unit UIDs to extract data for.
-        periods : list[str]
-            List of DHIS2 periods to extract data for.
+        period : str
+            DHIS2 period (valid format) to extract data for.
         output_dir : Path
             Directory where extracted data files will be saved.
+
+        Returns
+        -------
+        Path | None
+            The path to the extracted data file, or None if no data was extracted.
 
         Raises
         ------
@@ -147,23 +160,22 @@ class ReportingRatesExtractor:
             If an error occurs during the extract process.
         """
         try:
-            for period in periods:
-                current_run.log_info(f"Retrieving reporting rates for period : {period}")
-                self.extractor._handle_extract_for_period(
-                    handler=self,
-                    data_products=reporting_rates,
-                    org_units=org_units,
-                    period=period,
-                    output_dir=output_dir,
-                )
+            current_run.log_info(f"Retrieving reporting rates for period : {period}")
+            return self.extractor._handle_extract_for_period(
+                handler=self,
+                data_products=reporting_rates,
+                org_units=org_units,
+                period=period,
+                output_dir=output_dir,
+            )
         except Exception as e:
-            raise Exception(f"Extract download error : {e}") from e
+            raise Exception(f"Extract reporting rates download error : {e}") from e
 
     def _retrieve_data(self, reporting_rates: list[str], org_units: list[str], period: str) -> pd.DataFrame:
         if not self.extractor._valid_dhis2_period_format(period):
             raise ValueError(f"Invalid DHIS2 period format: {period}")
         try:
-            response = self.extractor.analytics.get(
+            response = self.extractor.dhis2_client.analytics.get(
                 data_elements=reporting_rates,
                 periods=[period],
                 org_units=org_units,
@@ -189,6 +201,11 @@ class DHIS2Extractor:
         Mode for downloading files ("DOWNLOAD_REPLACE" or "DOWNLOAD_NEW").
     last_updated : None
         Placeholder for future use.
+    return_existing_file : bool
+        When DOWNLOAD_NEW mode is used:
+            True: returns the path to existing files.
+            False: returns None if the file already exists.
+        Default is False.
 
     Handlers
     --------
@@ -200,7 +217,9 @@ class DHIS2Extractor:
         Handler for extracting reporting rates.
     """
 
-    def __init__(self, dhis2_client: DHIS2, download_mode: str = "DOWNLOAD_REPLACE"):
+    def __init__(
+        self, dhis2_client: DHIS2, download_mode: str = "DOWNLOAD_REPLACE", return_existing_file: bool = False
+    ):
         self.dhis2_client = dhis2_client
         if download_mode not in {"DOWNLOAD_REPLACE", "DOWNLOAD_NEW"}:
             raise ValueError("Invalid 'download_mode', use 'DOWNLOAD_REPLACE' or 'DOWNLOAD_NEW'.")
@@ -209,6 +228,7 @@ class DHIS2Extractor:
         self.data_elements = DataElementsExtractor(self)
         self.indicators = IndicatorsExtractor(self)
         self.reporting_rates = ReportingRatesExtractor(self)
+        self.return_existing_file = return_existing_file
 
     def _handle_extract_for_period(
         self,
@@ -224,7 +244,7 @@ class DHIS2Extractor:
         # Skip if already exists and mode is DOWNLOAD_NEW
         if self.download_mode == "DOWNLOAD_NEW" and extract_fname.exists():
             current_run.log_info(f"Extract for period {period} already exists, download skipped.")
-            return extract_fname
+            return extract_fname if self.return_existing_file else None
 
         raw_data = handler._retrieve_data(data_products, org_units, period)
 

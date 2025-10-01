@@ -9,7 +9,7 @@
     "ORG_UNITS" : {},
     "DATA_ELEMENTS" : {
         "EXTRACTS" : [
-            {              
+            {
                 "EXTRACT_UID" : "level_zs",
                 "MAPPINGS" : {
                     "PMuB7JCsLsg" : {
@@ -1078,10 +1078,21 @@
                     }
                 }
             }
-        ] 
+        ]
     },     
-    "REPORTING_RATES": {
-        "MAPPINGS":{}
+    "REPORTING_RATES":  {
+        "EXTRACTS": [
+            {
+                "EXTRACT_UID": "ds_level_fosa",
+                "MAPPINGS": {
+                    "DxDuYrrZSa7": {
+                        "REPORTING_RATE": "Z72bW4NAs3K", 
+                        "REPORTING_RATE_ON_TIME": "FGIdNWUgkpT", 
+                        "EXPECTED_REPORTS": "f2pnr5JPPaG"
+                    }
+                }
+            }
+        ]        
     },
     "INDICATORS" : {
         "MAPPINGS":{}

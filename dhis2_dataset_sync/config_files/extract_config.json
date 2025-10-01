@@ -118,10 +118,19 @@
             }
         ]
     },
-    "INDICATORS" : {
-        "EXTRACTS" : []
-    },
     "REPORTING_RATES" : {
+        "EXTRACTS" : [
+            {
+                "EXTRACT_UID" : "ds_level_fosa",
+                "DATASETS" : {
+                    "DxDuYrrZSa7": ["REPORTING_RATE", "REPORTING_RATE_ON_TIME", "EXPECTED_REPORTS"]
+                },
+                "ORG_UNITS_LEVEL" : 5,
+                "FREQUENCY" : "MONTHLY"
+            }
+        ]
+    },
+    "INDICATORS" : {
         "EXTRACTS" : []
     }
 }

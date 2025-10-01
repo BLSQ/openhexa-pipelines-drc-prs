@@ -1,12 +1,12 @@
 import json
 import logging
 
-# from pathlib import Path
 import pandas as pd
 import requests
-from data_point import DataPoint
 from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2 import DHIS2
+
+from .data_point import DataPoint
 
 logger = logging.getLogger(__name__)
 
