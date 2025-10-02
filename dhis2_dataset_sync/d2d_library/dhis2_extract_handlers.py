@@ -13,7 +13,7 @@ class DataElementsExtractor:
         self.extractor = extractor
 
     def download_period(
-        self, data_elements: list[str], org_units: list[str], period: str, output_dir: Path
+        self, data_elements: list[str], org_units: list[str], period: str, output_dir: Path, filename: str | None = None
     ) -> Path | None:
         """Download and handle data extracts for the specified period, saving them to the output directory.
 
@@ -27,6 +27,8 @@ class DataElementsExtractor:
             DHIS2 period (valid format) to extract data for.
         output_dir : Path
             Directory where extracted data files will be saved.
+        filename : str | None
+            Optional filename for the extracted data file. If None, a default name will be used.
 
         Returns
         -------
@@ -46,6 +48,7 @@ class DataElementsExtractor:
                 org_units=org_units,
                 period=period,
                 output_dir=output_dir,
+                filename=filename,
             )
         except Exception as e:
             raise Exception(f"Extract data elements download error : {e}") from e
@@ -73,7 +76,7 @@ class IndicatorsExtractor:
         self.extractor = extractor
 
     def download_period(
-        self, indicators: list[str], org_units: list[str], period: str, output_dir: Path
+        self, indicators: list[str], org_units: list[str], period: str, output_dir: Path, filename: str | None = None
     ) -> Path | None:
         """Download and handle data extracts for the specified periods, saving them to the output directory.
 
@@ -87,6 +90,8 @@ class IndicatorsExtractor:
             DHIS2 period (valid format) to extract data for.
         output_dir : Path
             Directory where extracted data files will be saved.
+        filename : str | None
+            Optional filename for the extracted data file. If None, a default name will be used.
 
         Returns
         -------
@@ -106,6 +111,7 @@ class IndicatorsExtractor:
                 org_units=org_units,
                 period=period,
                 output_dir=output_dir,
+                filename=filename,
             )
         except Exception as e:
             raise Exception(f"Extract indicators download error : {e}") from e
@@ -134,7 +140,12 @@ class ReportingRatesExtractor:
         self.extractor = extractor
 
     def download_period(
-        self, reporting_rates: list[str], org_units: list[str], period: str, output_dir: Path
+        self,
+        reporting_rates: list[str],
+        org_units: list[str],
+        period: str,
+        output_dir: Path,
+        filename: str | None = None,
     ) -> Path | None:
         """Download and handle data extracts for the specified periods, saving them to the output directory.
 
@@ -148,6 +159,8 @@ class ReportingRatesExtractor:
             DHIS2 period (valid format) to extract data for.
         output_dir : Path
             Directory where extracted data files will be saved.
+        filename : str | None
+            Optional filename for the extracted data file. If None, a default name will be used.
 
         Returns
         -------
@@ -160,13 +173,14 @@ class ReportingRatesExtractor:
             If an error occurs during the extract process.
         """
         try:
-            current_run.log_info(f"Retrieving reporting rates for period : {period}")
+            current_run.log_info(f"Retrieving reporting rates extract for period : {period}")
             return self.extractor._handle_extract_for_period(
                 handler=self,
                 data_products=reporting_rates,
                 org_units=org_units,
                 period=period,
                 output_dir=output_dir,
+                filename=filename,
             )
         except Exception as e:
             raise Exception(f"Extract reporting rates download error : {e}") from e
@@ -237,9 +251,13 @@ class DHIS2Extractor:
         org_units: list[str],
         period: str,
         output_dir: Path,
+        filename: str | None = None,
     ) -> Path | None:
         output_dir.mkdir(parents=True, exist_ok=True)
-        extract_fname = output_dir / f"data_{period}.parquet"
+        if filename:
+            extract_fname = output_dir / filename
+        else:
+            extract_fname = output_dir / f"data_{period}.parquet"
 
         # Skip if already exists and mode is DOWNLOAD_NEW
         if self.download_mode == "DOWNLOAD_NEW" and extract_fname.exists():

@@ -1,16 +1,16 @@
 {
     "SETTINGS":{
-        "SOURCE_DHIS2_CONNECTION" : "drc-snis",
+        "SOURCE_DHIS2_CONNECTION": "drc-snis",
         "NUMBER_MONTHS_WINDOW": 3,
 		"STARTDATE": "",
 		"ENDDATE": "",
-        "MODE" : "DOWNLOAD_REPLACE"
+        "MODE": "DOWNLOAD_REPLACE"
     },
-    "DATA_ELEMENTS" : {
-        "EXTRACTS" : [
+    "DATA_ELEMENTS": {
+        "EXTRACTS": [
             {
-                "EXTRACT_UID" : "level_zs",
-                "UIDS" : [
+                "EXTRACT_UID": "level_zs",
+                "UIDS": [
                     "PMuB7JCsLsg",
                     "imqSmhfQTPN",
                     "Gq9Z3wvbcsa",
@@ -50,12 +50,12 @@
                     "doMlZ2uA9kF",
                     "vtqAD1gqMxx"
                 ],
-                "ORG_UNITS_LEVEL" : 3,
-                "FREQUENCY" : "MONTHLY"
+                "ORG_UNITS_LEVEL": 3,
+                "FREQUENCY": "MONTHLY"
             },
             {
-                "EXTRACT_UID" : "level_fosa",
-                "UIDS" : [
+                "EXTRACT_UID": "level_fosa",
+                "UIDS": [
                     "CIzQAR8IWH1",
                     "pOZcn5GNnRD",
                     "CGZbvJchfjk",
@@ -113,24 +113,23 @@
                     "QafSfDEL1Ku",
                     "BCcFZzgTlxQ"               
                 ],
-                "ORG_UNITS_LEVEL" : 5,
-                "FREQUENCY" : "MONTHLY"
+                "ORG_UNITS_LEVEL": 5,
+                "FREQUENCY": "MONTHLY"
             }
         ]
     },
-    "REPORTING_RATES" : {
-        "EXTRACTS" : [
+    "REPORTING_RATES": {
+        "EXTRACTS": [
             {
-                "EXTRACT_UID" : "ds_level_fosa",
-                "DATASETS" : {
+                "EXTRACT_UID": "ds_1",
+                "DATASETS": {
                     "DxDuYrrZSa7": ["REPORTING_RATE", "REPORTING_RATE_ON_TIME", "EXPECTED_REPORTS"]
-                },
-                "ORG_UNITS_LEVEL" : 5,
-                "FREQUENCY" : "MONTHLY"
+                },                                
+                "FREQUENCY": "MONTHLY"
             }
         ]
     },
-    "INDICATORS" : {
-        "EXTRACTS" : []
+    "INDICATORS": {
+        "EXTRACTS": []
     }
 }
