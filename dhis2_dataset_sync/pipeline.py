@@ -70,27 +70,27 @@ def dhis2_dataset_sync(run_ou_sync: bool = True, run_extract_data: bool = True, 
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_dataset_sync"
 
     try:
-        # pyramid_ready = sync_organisation_units(
-        #     pipeline_path=pipeline_path,
-        #     run_task=run_ou_sync,
-        # )
+        pyramid_ready = sync_organisation_units(
+            pipeline_path=pipeline_path,
+            run_task=run_ou_sync,
+        )
 
-        # datasets_ready = sync_dataset_organisation_units(
-        #     pipeline_path=pipeline_path,
-        #     run_task=run_ou_sync,  # only run if OU sync was run
-        #     wait=pyramid_ready,
-        # )
+        datasets_ready = sync_dataset_organisation_units(
+            pipeline_path=pipeline_path,
+            run_task=run_ou_sync,  # only run if OU sync was run
+            wait=pyramid_ready,
+        )
 
-        # extract_data(
-        #     pipeline_path=pipeline_path,
-        #     run_task=run_extract_data,
-        #     wait=datasets_ready,
-        # )
+        extract_data(
+            pipeline_path=pipeline_path,
+            run_task=run_extract_data,
+            wait=datasets_ready,
+        )
 
         push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
-            wait=True,  # datasets_ready,
+            wait=datasets_ready,
         )
 
     except Exception as e:
@@ -464,7 +464,7 @@ def extract_data(
     )
 
 
-# @dhis2_dataset_sync.task
+@dhis2_dataset_sync.task
 def push_data(
     pipeline_path: Path,
     run_task: bool = True,
