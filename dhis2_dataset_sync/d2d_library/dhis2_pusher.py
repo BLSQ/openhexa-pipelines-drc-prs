@@ -115,8 +115,10 @@ class DHIS2Pusher:
         else:
             logger.error(f"Logging {len(errors)} error(s) from export summary.")
             for i_e, error in enumerate(errors, start=1):
-                logger.error(f"Error {i_e} : HTTP request failed : {error.get('error', None)}")
-                error_response = error.get("response", None)
+                error_value = error.get("value", None)
+                error_code = error.get("errorCode", None)
+                logger.error(f"Error {i_e} value: {error_value} (DHSI2 errorCode: {error_code})")
+                error_response = error.get("response", None)  # if any (⊙_☉)
                 if error_response:
                     rejected_list = error_response.pop("rejected_datapoints", [])
                     logger.error(f"Error response : {error_response}")
