@@ -1,5 +1,5 @@
 [project]
-name = "openhexa-templates-ds"
+name = "openhexa-templates-drc-prs"
 version = "0.1.0"
 description = "OpenHEXA pipeline templates library maintained by Bluesquare Data Services team"
 readme = "README.md"
