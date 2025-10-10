@@ -1,22 +1,17 @@
 import logging
 import time
 from datetime import datetime
-from itertools import product
 from pathlib import Path
 
 import pandas as pd
 import polars as pl
-import requests
 from d2d_library.db_queue import Queue
 from d2d_library.dhis2_extract_handlers import DHIS2Extractor
-from d2d_library.dhis2_org_unit_aligner import DHIS2PyramidAligner
 from d2d_library.dhis2_pusher import DHIS2Pusher
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, parameter, pipeline, workspace
-from openhexa.toolbox.dhis2 import DHIS2
 from openhexa.toolbox.dhis2.dataframe import get_datasets
 from openhexa.toolbox.dhis2.periods import period_from_string
-from requests.exceptions import HTTPError, RequestException
 from utils import (
     configure_logging,
     connect_to_dhis2,
@@ -56,10 +51,10 @@ def dhis2_cmm_push(run_extract_data: bool, run_push_data: bool):
             run_task=run_extract_data,
         )
 
-        # push_data(
-        #     pipeline_path=pipeline_path,
-        #     run_task=run_push_data,
-        # )
+        push_data(
+            pipeline_path=pipeline_path,
+            run_task=run_push_data,
+        )
 
     except Exception as e:
         current_run.log_error(f"An error occurred: {e}")
@@ -306,56 +301,55 @@ def compute_cmm_and_queue(
     extracts_folder = pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}"
     output_dir = pipeline_path / "data" / "cmm"
     output_dir.mkdir(parents=True, exist_ok=True)
-    for period in cmm_periods:
-        current_run.log_info(f"Computing CMM for period: {period} using a {cmm_window}-month window.")
-        start_cmm = (datetime.strptime(period, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
-        end_cmm = (datetime.strptime(period, "%Y%m") - relativedelta(months=1)).strftime("%Y%m")
-        target_periods = get_periods(start_cmm, end_cmm)
+    try:
+        for period in cmm_periods:
+            current_run.log_info(f"Computing CMM for period: {period} using a {cmm_window}-month window.")
+            start_cmm = (datetime.strptime(period, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
+            end_cmm = (datetime.strptime(period, "%Y%m") - relativedelta(months=1)).strftime("%Y%m")
+            target_periods = get_periods(start_cmm, end_cmm)
 
-        # Collect cmm period files
-        files_to_read = [
-            extracts_folder / f"data_{p}.parquet"
-            for p in target_periods
-            if (extracts_folder / f"data_{p}.parquet").exists()
-        ]
+            files_to_read = {
+                p: (extracts_folder / f"data_{p}.parquet") if (extracts_folder / f"data_{p}.parquet").exists() else None
+                for p in target_periods
+            }
+            missing_extracts = [k for k, v in files_to_read.items() if not v]
 
-        if not files_to_read:
-            raise FileNotFoundError(f"No parquet files found for {target_periods} in {extracts_folder}")
+            if len(missing_extracts) == len(target_periods):
+                raise FileNotFoundError(f"No parquet files found for {target_periods} in {extracts_folder}")
 
-        if len(files_to_read) < len(target_periods):
-            current_run.log_warning(
-                f"Missing parquet files for CMM computation period {period}. "
-                f"Expected {len(target_periods)}, found {len(files_to_read)}."
+            if missing_extracts:
+                current_run.log_warning(
+                    f"Expected {len(target_periods)} parquet files for CMM computation period {period}, "
+                    f"but missing files for periods: {missing_extracts}."
+                )
+
+            try:
+                df = pl.concat([pl.read_parquet(f) for f in files_to_read.values() if f is not None])
+            except Exception as e:
+                raise RuntimeError(f"Error reading parquet files for CMM computation: {e!s}") from e
+
+            # PRS specific filter (!)
+            df = df.filter((pl.col("CATEGORY_OPTION_COMBO") == "cjeG5HSWRIU") & (pl.col("DX_UID").is_in(data_elements)))
+            df = df.with_columns(pl.col("VALUE").cast(pl.Float64))
+            df_avg = df.group_by(["DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO"]).agg(
+                [pl.col("VALUE").mean().alias("AVG_VALUE")]
             )
 
-        try:
-            # Read and concatenate data (use polars for efficiency)
-            df = pl.concat([pl.read_parquet(f) for f in files_to_read])
-        except Exception as e:
-            raise Exception(f"Error reading parquet files for CMM computation: {e!s}") from e
+            # Format for DHIS2 import
+            df_final = format_for_import(df_avg, period)
 
-        # PRS specific filter (!)
-        df = df.filter((pl.col("CATEGORY_OPTION_COMBO") == "cjeG5HSWRIU") & (pl.col("DX_UID").is_in(data_elements)))
-        df = df.with_columns(pl.col("VALUE").cast(pl.Float64))
-        df_avg = df.group_by(["DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO"]).agg(
-            [pl.col("VALUE").mean().alias("AVG_VALUE")]
-        )
-
-        # Format for DHIS2 import
-        df_final = format_for_import(df_avg, period)
-
-        try:
-            save_to_parquet(
-                data=df_final.to_pandas(),  # convert to pandas for saving ¯\\_(ツ)_/¯
-                filename=output_dir / f"cmm_{period}.parquet",
-            )
-            push_queue.enqueue(f"{extract_id}|{output_dir / f'cmm_{period}.parquet'}")
-        except Exception as e:
-            logging.error(f"CMM saving error: {e!s}")
-            raise Exception(f"Error saving CMM parquet file for period {period}.") from e
-        finally:
-            push_queue.enqueue("FINISH")
-    current_run.log_info("CMM computation finished.")
+            try:
+                save_to_parquet(
+                    data=df_final.to_pandas(),  # convert to pandas for saving ¯\\_(ツ)_/¯
+                    filename=output_dir / f"cmm_{period}.parquet",
+                )
+                push_queue.enqueue(f"{extract_id}|{output_dir / f'cmm_{period}.parquet'}")
+            except Exception as e:
+                logging.error(f"CMM saving error: {e!s}")
+                current_run.log_error(f"Error saving CMM parquet file for period {period}.")
+    finally:
+        current_run.log_info("CMM computation finished.")
+        push_queue.enqueue("FINISH")
 
 
 def format_for_import(df: pl.DataFrame, period: str) -> pd.DataFrame:
@@ -389,7 +383,7 @@ def format_for_import(df: pl.DataFrame, period: str) -> pd.DataFrame:
     )
 
 
-# @dhis2_dataset_sync.task
+@dhis2_cmm_push.task
 def push_data(
     pipeline_path: Path,
     run_task: bool = True,
@@ -488,6 +482,8 @@ def push_data(
             logging.error(f"Fatal error for extract {extract_id} ({short_path}): {e!s}")
             raise  # crash on error
 
+    current_run.log_info("Data push task finished.")
+
 
 def split_on_pipe(s: str) -> tuple[str, str | None]:
     """Splits a string on the first pipe character and returns a tuple.
@@ -575,7 +571,7 @@ def apply_analytics_data_element_extract_config(df: pd.DataFrame, extract_config
         df_filtered["DX_UID"] = df_filtered.loc[:, "DX_UID"].replace(uid_mappings_clean)
 
     # Fill missing AOC (PRS default)
-    df_uid["ATTRIBUTE_OPTION_COMBO"] = df_uid.loc[:, "ATTRIBUTE_OPTION_COMBO"].replace({None: "HllvX50cXC0"})
+    df_filtered["ATTRIBUTE_OPTION_COMBO"] = df_filtered.loc[:, "ATTRIBUTE_OPTION_COMBO"].replace({None: "HllvX50cXC0"})
 
     return df_filtered
 
