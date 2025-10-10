@@ -5,13 +5,16 @@ from pathlib import Path
 
 import pandas as pd
 import polars as pl
+import requests
 from d2d_library.db_queue import Queue
 from d2d_library.dhis2_extract_handlers import DHIS2Extractor
 from d2d_library.dhis2_pusher import DHIS2Pusher
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, parameter, pipeline, workspace
+from openhexa.toolbox.dhis2 import DHIS2
 from openhexa.toolbox.dhis2.dataframe import get_datasets
 from openhexa.toolbox.dhis2.periods import period_from_string
+from requests.exceptions import HTTPError, RequestException
 from utils import (
     configure_logging,
     connect_to_dhis2,
@@ -41,7 +44,7 @@ def dhis2_cmm_push(run_extract_data: bool, run_push_data: bool):
 
     Compute the CMM (Consomation mensuelle moyenne) over a 6-month rolling window
      the results are then push back to PRS DHIS2 to the target CMM data elements.
-    NOTE: Theres no need for organisation unit alignment in this pipeline.
+    NOTE: Theres no need for organisation unit alignment between source and target.
     """
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_cmm_push"
 
@@ -51,9 +54,15 @@ def dhis2_cmm_push(run_extract_data: bool, run_push_data: bool):
             run_task=run_extract_data,
         )
 
+        sync_ready = update_dataset_org_units(
+            pipeline_path=pipeline_path,
+            run_task=run_push_data,
+        )
+
         push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
+            wait=sync_ready,
         )
 
     except Exception as e:
@@ -384,6 +393,111 @@ def format_for_import(df: pl.DataFrame, period: str) -> pd.DataFrame:
 
 
 @dhis2_cmm_push.task
+def update_dataset_org_units(
+    pipeline_path: Path,
+    run_task: bool = True,
+) -> bool:
+    """Updates the organisation units of datasets in the PRS DHIS2 instance.
+
+    NOTE: This is PRS specific.
+
+    Returns
+    -------
+    bool
+        True if the update was performed, False if skipped.
+    """
+    if not run_task:
+        current_run.log_info("Update dataset org units task skipped.")
+        return True
+
+    try:
+        current_run.log_info("Starting update of dataset organisation units.")
+
+        # Previously the source dataset has been sync with SNIS by pipeline dhis2_dataset_sync.
+        # Sync OU: PRS C- SIGL FOSA-Import SNIS SANRU (wMCnDAQfGZN) -> PRS CMM - OpenHexa (uuoQdHIDMTB)
+        configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
+        config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+        prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
+
+        push_dataset_org_units(
+            dhis2_client=connect_to_dhis2(connection_str=prs_conn, cache_dir=None),
+            source_dataset_id="wMCnDAQfGZN",  # PRS C- SIGL FOSA-Import SNIS
+            target_dataset_id="uuoQdHIDMTB",  # PRS CMM - OpenHexa
+            dry_run=config["SETTINGS"].get("DRY_RUN", True),
+        )
+
+    except Exception as e:
+        current_run.log_error("An error occurred during dataset org units update. Process stopped.")
+        logging.error(f"An error occurred during dataset org units update: {e!s}")
+        raise
+
+    return True
+
+
+def push_dataset_org_units(
+    dhis2_client: DHIS2, source_dataset_id: str, target_dataset_id: str, dry_run: bool = True
+) -> dict:
+    """Updates the organisation units of a DHIS2 dataset.
+
+    Parameters
+    ----------
+    dhis2_client : DHIS2
+        DHIS2 client for the target instance.
+    source_dataset_id : str
+        The ID of the dataset from where to retrieve the org unit ids.
+    target_dataset_id : str
+        The ID of the dataset to be updated.
+    dry_run : bool, optional
+        If True, performs a dry run without making changes (default is True).
+
+    Returns
+    -------
+    dict
+        The response from the DHIS2 API, or an error payload.
+    """
+    datasets = get_datasets(dhis2_client)
+    source_dataset = datasets.filter(pl.col("id").is_in([source_dataset_id]))
+    target_dataset = datasets.filter(pl.col("id").is_in([target_dataset_id]))
+    source_ous = source_dataset["organisation_units"].explode().to_list()
+    target_ous = target_dataset["organisation_units"].explode().to_list()
+
+    # here first check if the list of ids is different
+    new_org_units = set(source_ous) - set(target_ous)
+    if len(new_org_units) == 0:
+        current_run.log_info("Source and target dataset organisation units are in sync, no update needed.")
+        return {"status": "skipped", "message": "No update needed, org units are identical."}
+
+    current_run.log_info(
+        f"Found {len(new_org_units)} new org units to add to target dataset "
+        f"'{target_dataset['name'].item()}' ({target_dataset_id})."
+    )
+
+    # Step 1: GET current dataset
+    url = f"{dhis2_client.api.url}/dataSets/{target_dataset_id}"
+    dataset_payload = dhis2_request(dhis2_client.api.session, "get", url)
+    if "error" in dataset_payload:
+        return dataset_payload
+
+    # Step 2: Update organisationUnits
+    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in new_org_units]
+
+    # Step 3: PUT updated dataset
+    update_response = dhis2_request(
+        dhis2_client.api.session, "put", url, json=dataset_payload, params={"dryRun": str(dry_run).lower()}
+    )
+
+    if "error" in update_response:
+        current_run.log_info(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
+        logging.error(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
+    else:
+        msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: {len(new_org_units)}"
+        current_run.log_info(msg)
+        logging.info(msg)
+
+    return update_response
+
+
+@dhis2_cmm_push.task
 def push_data(
     pipeline_path: Path,
     run_task: bool = True,
@@ -596,6 +710,42 @@ def apply_indicators_extract_config():
         This function is not yet implemented.
     """
     raise NotImplementedError
+
+
+def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: any) -> dict:
+    """Wrapper around requests to handle DHIS2 GET/PUT with error handling.
+
+    Parameters
+    ----------
+    session : requests.Session
+        Session object used to perform requests.
+    method : str
+        HTTP method: 'get' or 'put'.
+    url : str
+        Full URL for the request.
+    **kwargs
+        Additional arguments for session.request (json, params, etc.)
+
+    Returns
+    -------
+    dict
+        Either the response JSON or an error payload with 'error' and 'status_code'.
+    """
+    try:
+        r = session.request(method, url, **kwargs)
+        r.raise_for_status()
+        return r.json()
+    except HTTPError as e:
+        try:
+            return {
+                "error": f"HTTP error during {method.upper()} {e} status_code: {r.status_code} response: {r.json()}"
+            }
+        except Exception:
+            return {"error": f"HTTP error during {method.upper()} {e} status_code: {r.status_code}"}
+    except RequestException as e:
+        return {"error": f"Request error during {method.upper()} {url}: {e}"}
+    except Exception as e:
+        return {"error": f"Unexpected error during {method.upper()} {url}: {e}"}
 
 
 if __name__ == "__main__":
