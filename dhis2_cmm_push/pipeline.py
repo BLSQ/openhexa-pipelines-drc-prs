@@ -250,7 +250,8 @@ def check_validate_and_save_extract(data_elements: list[str], repo_path: Path, p
     num_found = df_selection["DX_UID"].nunique()
     df_selection.to_parquet(output / f"data_{period}.parquet", index=False)
     current_run.log_info(
-        f"Extract for period {period} created from existing data. Data elements found: {num_found}/{len(data_elements)}."
+        f"Extract for period {period} created from existing data. "
+        f"Data elements found: {num_found}/{len(data_elements)}."
     )
     return True
 
