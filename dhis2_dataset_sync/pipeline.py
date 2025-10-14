@@ -8,6 +8,7 @@ import pandas as pd
 import polars as pl
 import requests
 from d2d_library.db_queue import Queue
+from d2d_library.dhis2_dataset_completion_handler import DatasetCompletionSync
 from d2d_library.dhis2_extract_handlers import DHIS2Extractor
 from d2d_library.dhis2_org_unit_aligner import DHIS2PyramidAligner
 from d2d_library.dhis2_pusher import DHIS2Pusher
@@ -75,11 +76,11 @@ def dhis2_dataset_sync(run_ou_sync: bool = True, run_extract_data: bool = True, 
         #     run_task=run_ou_sync,
         # )
 
-        # datasets_ready = sync_dataset_organisation_units(
-        #     pipeline_path=pipeline_path,
-        #     run_task=run_ou_sync,  # only run if OU sync was run
-        #     wait=pyramid_ready,
-        # )
+        datasets_ready = sync_dataset_organisation_units(
+            pipeline_path=pipeline_path,
+            run_task=run_ou_sync,  # only run if OU sync was run
+            wait=True,  # pyramid_ready,
+        )
 
         # extract_data(
         #     pipeline_path=pipeline_path,
@@ -87,11 +88,11 @@ def dhis2_dataset_sync(run_ou_sync: bool = True, run_extract_data: bool = True, 
         #     wait=datasets_ready,
         # )
 
-        push_data(
-            pipeline_path=pipeline_path,
-            run_task=run_push_data,
-            wait=True,  # datasets_ready,
-        )
+        # push_ready = push_data(
+        #     pipeline_path=pipeline_path,
+        #     run_task=run_push_data,
+        #     wait=True, #datasets_ready,
+        # )
 
     except Exception as e:
         current_run.log_error(f"An error occurred: {e}")
@@ -192,7 +193,7 @@ def align_org_units(
     )
 
 
-@dhis2_dataset_sync.task
+# @dhis2_dataset_sync.task
 def sync_dataset_organisation_units(
     pipeline_path: Path,
     run_task: bool = True,
@@ -268,11 +269,34 @@ def align_dataset_org_units(
         source_datasets = get_datasets(source_dhis2)
         target_datasets = get_datasets(target_dhis2)
     except Exception as e:
-        current_run.log_error(f"Failed to fetch datasets: {e}")
+        current_run.log_error(f"Failed to fetch datasets: {e!s}")
         return
 
     # Select only datasets to sync
     source_datasets_selection = source_datasets.filter(pl.col("id").is_in(dataset_mappings.keys()))
+
+    # PRS project specific (Dummy datasets mapping to full pyramid)
+    full_pyramid_mapping = dataset_mappings.get("FULL_PYRAMID")
+    if full_pyramid_mapping:
+        # Retrieve all organisation units from the target DHIS2
+        target_pyramid = target_dhis2.meta.organisation_units(
+            fields="id,name,shortName,openingDate,closedDate,parent,level,path,geometry"
+        )
+        levels = [5]
+        selected_ids = target_pyramid.filter(pl.col("level").is_in(levels))["id"].unique().to_list()  ## HOW many?
+        new_row = pl.DataFrame(
+            {
+                "id": ["FULL_PYRAMID"],
+                "name": ["Full Pyramid"],
+                "organisation_units": [selected_ids],
+                "data_elements": [[]],
+                "indicators": [[]],
+                "period_type": ["Monthly"],
+            }
+        )
+        # Append the new row
+        source_datasets_selection = source_datasets_selection.vstack(new_row)
+
     msg = f"Running updates for {source_datasets_selection.shape[0]} datasets."
     current_run.log_info(msg)
     logger.info(msg)  # should move to a parameter log
@@ -504,6 +528,13 @@ def push_data(
         max_post=max_post,
     )
 
+    # Dataset completion syncer
+    source_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+    target_dhis2 = connect_to_dhis2(connection_str=source_config["SETTINGS"]["SOURCE_DHIS2_CONNECTION"], cache_dir=None)
+    completion_syncer = DatasetCompletionSync(
+        source_client=dhis2_client, target_client=target_dhis2, import_strategy=import_strategy, dry_run=dry_run
+    )
+
     # Map data types to their respective mapping functions
     dispatch_map = {
         "DATA_ELEMENT": (config["DATA_ELEMENTS"]["EXTRACTS"], apply_data_element_extract_config),
@@ -537,6 +568,7 @@ def push_data(
         try:
             # Determine data type
             data_type = extract_data["DATA_TYPE"].unique()[0]
+            period = extract_data["PERIOD"].unique()[0]
 
             # Set values of 'REPORTING_RATE' from '100' -> '1' (specific to DRC PRS project)
             mask = (extract_data.DATA_TYPE == "REPORTING_RATE") & (
@@ -564,6 +596,15 @@ def push_data(
             # Success → dequeue
             push_queue.dequeue()
             current_run.log_info(f"Data push finished for extract: {short_path}.")
+
+            # Set dataset competion for all org units for this period
+            handle_dataset_completion(
+                completion_syncer,
+                source_ds_id=extract_config.get("SOURCE_DATASET_UID"),
+                target_ds_id=extract_config.get("TARGET_DATASET_UID"),
+                period=period,
+                org_units=extract_data["ORG_UNIT"].unique(),
+            )
 
         except Exception as e:
             current_run.log_error(f"Fatal error for extract {extract_id} ({short_path}), stopping push process.")
@@ -1010,6 +1051,26 @@ def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: an
         return {"error": f"Request error during {method.upper()} {url}: {e}"}
     except Exception as e:
         return {"error": f"Unexpected error during {method.upper()} {url}: {e}"}
+
+
+def handle_dataset_completion(
+    syncer: DatasetCompletionSync, source_ds_id: str, target_ds_id: str, period: str, org_units: list[str]
+) -> None:
+    """Sets datasets as complete for the pushed periods.
+
+    This is a placeholder function and should be implemented based on specific requirements.
+    """
+    if not source_ds_id:
+        return
+    if not target_ds_id:
+        return
+
+    current_run.log_info(f"Starting dataset '{target_ds_id}' completion for period: {period}")
+    try:
+        syncer.sync(source_dataset_id=source_ds_id, target_dataset_id=target_ds_id, period=period, org_units=org_units)
+    except Exception as e:
+        current_run.log_error(f"Error setting dataset completion for dataset {target_ds_id}, period {period}")
+        logging.error(f"Error setting dataset completion for dataset {target_ds_id}, period {period}: {e!s}")
 
 
 if __name__ == "__main__":
