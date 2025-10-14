@@ -231,6 +231,9 @@ class DHIS2Pusher:
             return None
 
     def _safe_json(self, r: requests.Response) -> dict | None:
+        if r is None:
+            return None
+
         try:
             return r.json()
         except (ValueError, json.JSONDecodeError):

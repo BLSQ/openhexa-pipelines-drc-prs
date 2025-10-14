@@ -2,8 +2,8 @@
     "SETTINGS":{
         "SOURCE_DHIS2_CONNECTION": "drc-snis",
         "NUMBER_MONTHS_WINDOW": 3,
-		"STARTDATE": "",
-		"ENDDATE": "",
+		"STARTDATE": "202501",
+		"ENDDATE": "202508",
         "MODE": "DOWNLOAD_REPLACE"
     },
     "DATA_ELEMENTS": {
@@ -55,20 +55,7 @@
             },
             {
                 "EXTRACT_UID": "level_fosa",
-                "UIDS": [
-                    "CIzQAR8IWH1",
-                    "pOZcn5GNnRD",
-                    "CGZbvJchfjk",
-                    "nRm30I4w9En",
-                    "rfeqp2kdOGi",
-                    "fsBcCCKHGUx",
-                    "uV53nh3MrYl",
-                    "JXm8J8GRJxI",
-                    "aK0QXqm8Zxn",
-                    "AxJhIi7tUam",
-                    "okUsVMBrhZC",
-                    "jrtkdRjvNKv",
-                    "IhUBOQkWKoo",
+                "UIDS": [                    
                     "eKHjiGzfBep",
                     "FVJ2v5RgBgL",
                     "PlYGakAhqbk",
@@ -106,12 +93,32 @@
                     "doMlZ2uA9kF",
                     "jlRZE5tTARe",
                     "pScfYi2Qxop",
-                    "vtqAD1gqMxx",
-                    "LS7EJuX7hGu",
-                    "IPnqGkUUN6U",
+                    "vtqAD1gqMxx"
+                ],
+                "ORG_UNITS_LEVEL": 5,
+                "FREQUENCY": "MONTHLY"
+            },
+            {
+                "EXTRACT_UID": "des_lvl_fosa",
+                "UIDS": [
+                    "BCcFZzgTlxQ",
+                    "okUsVMBrhZC",
+                    "aK0QXqm8Zxn",
+                    "IhUBOQkWKoo",
                     "uIqmxJcTuub",
                     "QafSfDEL1Ku",
-                    "BCcFZzgTlxQ"               
+                    "fsBcCCKHGUx",
+                    "JXm8J8GRJxI",
+                    "pOZcn5GNnRD",
+                    "nRm30I4w9En",
+                    "AxJhIi7tUam",
+                    "jrtkdRjvNKv",
+                    "CIzQAR8IWH1",
+                    "rfeqp2kdOGi",
+                    "IPnqGkUUN6U",
+                    "uV53nh3MrYl",
+                    "CGZbvJchfjk",
+                    "LS7EJuX7hGu"
                 ],
                 "ORG_UNITS_LEVEL": 5,
                 "FREQUENCY": "MONTHLY"
@@ -119,15 +126,7 @@
         ]
     },
     "REPORTING_RATES": {
-        "EXTRACTS": [
-            {
-                "EXTRACT_UID": "ds_1",
-                "DATASETS": {
-                    "DxDuYrrZSa7": ["REPORTING_RATE", "REPORTING_RATE_ON_TIME", "EXPECTED_REPORTS"]
-                },                                
-                "FREQUENCY": "MONTHLY"
-            }
-        ]
+        "EXTRACTS": []
     },
     "INDICATORS": {
         "EXTRACTS": []
