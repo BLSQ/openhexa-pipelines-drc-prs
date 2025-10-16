@@ -597,15 +597,6 @@ def push_data(
                 org_units=extract_data["ORG_UNIT"].unique(),
             )
 
-            # Set dataset competion for all org units for this period
-            handle_dataset_completion(
-                completion_syncer,
-                source_ds_id=extract_config.get("SOURCE_DATASET_UID"),
-                target_ds_id=extract_config.get("TARGET_DATASET_UID"),
-                period=period,
-                org_units=extract_data["ORG_UNIT"].unique(),
-            )
-
         except Exception as e:
             current_run.log_error(f"Fatal error for extract {extract_id} ({extract_path.name}), stopping push process.")
             logging.error(f"Fatal error for extract {extract_id} ({extract_path.name}): {e!s}")
@@ -704,57 +695,6 @@ def resolve_dataset_metrics(
     return ds_metrics
 
 
-def resolve_dataset_org_units(
-    dataset_id: dict,
-    source_pyramid: pd.DataFrame,
-    source_datasets: pl.DataFrame,
-) -> list:
-    """Resolves the organisation units for a dataset extract based on configuration.
-
-    Returns
-    -------
-    list
-        List of organisation unit IDs.
-    """
-    # retrieve dataset org units from DHIS2
-    dataset = source_datasets.filter(pl.col("id") == dataset_id)
-    org_units_list = list(set(u for sublist in dataset["organisation_units"].to_list() for u in sublist))
-    return list(set(org_units_list) & set(source_pyramid["id"].to_list()))  # select only the OU of interest
-
-
-def merge_files_for_period(period_files: list[Path], output_file: Path) -> Path | None:
-    """Merge multiple parquet files for the same period into one parquet file.
-
-    Returns
-    -------
-    Path | None
-        Path to the merged parquet file or None if no files were merged.
-    """
-    if not period_files:
-        return None
-
-    dfs = []
-    for f in period_files:
-        try:
-            df = pd.read_parquet(f)
-            dfs.append(df)
-        except Exception as e:
-            current_run.log_warning(f"Failed to read {f}, skipping file.")
-            logging.warning(f"Failed to read {f}, skipping file. Error: {e}")
-
-    if not dfs:
-        current_run.log_warning(f"No valid files to merge for period: {output_file}")
-        logging.warning(f"No valid files to merge for period: {output_file}")
-        return None
-
-    # Concatenate successfully read files
-    merged_df = pd.concat(dfs, ignore_index=True)
-    merged_df.to_parquet(output_file, index=False)
-    logging.info(f"Merged {len(dfs)} files into {output_file}, total records: {len(merged_df)}")
-
-    return output_file
-
-
 def apply_data_element_extract_config(df: pd.DataFrame, extract_config: dict) -> pd.DataFrame:
     """Applies data element mappings to the extracted data.
 
@@ -828,34 +768,8 @@ def apply_reporting_rates_extract_config(
     df: pd.DataFrame,
     extract_config: dict,
 ) -> pd.DataFrame:
-    """Handles the mappings of reporting rates.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with mapped reporting rates.
-    """
-    if len(extract_config) == 0:
-        current_run.log_warning("No extract details provided, skipping data element mappings.")
-        return df
-
-    extract_mappings: dict = extract_config.get("MAPPINGS", {})
-    if len(extract_mappings) == 0:
-        current_run.log_warning("No extract mappings provided, skipping data element mappings.")
-        return df
-
-    mapped_df = df.copy()
-    # Set coc and aoc to default
-    mapped_df = mapped_df.fillna({"CATEGORY_OPTION_COMBO": "HllvX50cXC0", "ATTRIBUTE_OPTION_COMBO": "HllvX50cXC0"})
-
-    current_run.log_info(f"Applying reporting rate mappings for extract: {extract_config.get('EXTRACT_UID')}.")
-    for ds_id in extract_mappings:
-        mapping = extract_mappings.get(ds_id, {})
-        # Replace DX_UID based on RATE_TYPE
-        mask = mapped_df["DX_UID"] == ds_id
-        mapped_df.loc[mask, "DX_UID"] = mapped_df.loc[mask, "RATE_TYPE"].map(mapping)
-
-    return mapped_df
+    """Handles the mappings of reporting rates."""
+    raise NotImplementedError("Reporting rates mappings is not yet implemented.")
 
 
 def apply_indicators_extract_config(
@@ -863,7 +777,7 @@ def apply_indicators_extract_config(
     extract_config: dict,
 ):
     """Handles the mappings of reporting rates."""
-    raise NotImplementedError("Indicator extracts are not yet implemented.")
+    raise NotImplementedError("Indicator mappings is are not yet implemented.")
 
 
 def split_on_pipe(s: str) -> tuple[str, str | None]:
