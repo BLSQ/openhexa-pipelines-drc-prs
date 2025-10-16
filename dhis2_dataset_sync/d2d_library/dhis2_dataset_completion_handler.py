@@ -163,7 +163,6 @@ class DatasetCompletionSync:
     def _process_response(self, ds: str, pe: str, ou: str, response: dict) -> None:
         """Log the response from the DHIS2 API after pushing completion status."""
         json_or_none = self._safe_json(response)
-
         if not json_or_none:
             logging.error(
                 f"No JSON response received for completion request ds: {ds} pe: {pe} ou: {ou} from DHIS2 API."

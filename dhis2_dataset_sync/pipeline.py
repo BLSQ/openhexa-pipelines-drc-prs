@@ -193,7 +193,7 @@ def align_org_units(
     )
 
 
-@dhis2_dataset_sync.task
+# @dhis2_dataset_sync.task
 def sync_dataset_organisation_units(
     pipeline_path: Path,
     run_task: bool = True,
@@ -587,6 +587,15 @@ def push_data(
             # Success → dequeue
             push_queue.dequeue()
             current_run.log_info(f"Data push finished for extract: {extract_path.name}.")
+
+            # Set dataset competion for all org units for this period
+            handle_dataset_completion(
+                completion_syncer,
+                source_ds_id=extract_config.get("SOURCE_DATASET_UID"),
+                target_ds_id=extract_config.get("TARGET_DATASET_UID"),
+                period=period,
+                org_units=extract_data["ORG_UNIT"].unique(),
+            )
 
             # Set dataset competion for all org units for this period
             handle_dataset_completion(
