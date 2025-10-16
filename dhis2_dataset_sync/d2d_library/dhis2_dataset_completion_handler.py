@@ -132,7 +132,7 @@ class DatasetCompletionSync:
             "import_counts": {"imported": 0, "updated": 0, "ignored": 0, "deleted": 0},
         }
 
-        for ou in org_units:
+        for idx, ou in enumerate(org_units, start=1):
             completion_status = self._fetch_completion_status_from_source(
                 dataset_id=source_dataset_id, period=period, org_unit=ou
             )
@@ -147,6 +147,9 @@ class DatasetCompletionSync:
                 date=completion_status.get("date"),
                 completed=completion_status.get("completed"),
             )
+
+            if idx % 2000 == 0 or idx == len(org_units):
+                current_run.log_info(f"{idx} / {len(org_units)} OUs processed")
 
         current_run.log_info(
             f"Dataset completion for period {period} summary: {self.import_summary} total org units: {len(org_units)}"

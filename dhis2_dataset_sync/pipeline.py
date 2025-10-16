@@ -1066,7 +1066,7 @@ def handle_zs_mapping(
         return {"error": f"Unexpected error during payload fetch for dataset {ds_id} alignment: {e!s}"}
 
     ds_uids = [ou["id"] for ou in dataset_payload["organisationUnits"]]
-    new_org_units = list(set(zs_ou_ids) | set(ds_uids))  # push only ZS from the 20 Provinces + current
+    new_org_units = list(set(zs_ou_ids) | set(ds_uids))  # push ZS from the 20 Provinces + current
     new_row = pl.DataFrame(
         {
             "id": ["ZONES_SANTE"],
