@@ -5,9 +5,10 @@ import pandas as pd
 import requests
 from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2 import DHIS2
-from org_unit_point import OrgUnitObj
 from requests import Response
 from requests.structures import CaseInsensitiveDict
+
+from .org_unit_point import OrgUnitObj
 
 logger = logging.getLogger(__name__)
 

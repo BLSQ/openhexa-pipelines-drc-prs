@@ -1,7 +1,7 @@
 {  
-    "ORG_UNITS" : {
+    "ORG_UNITS": {
         "SELECTION": {
-            "UIDS" : [
+            "UIDS": [
                 "rWrCdr321Qu",
                 "XjeRGfqHMrl",
                 "F9w3VW1cQmb",
@@ -23,14 +23,16 @@
                 "mnOXJ2Oa5U7",
                 "ym2K6YcSNl9"
             ],
-            "INCLUDE_CHILDREN" : true,
-            "LIMIT_LEVEL" : 5
+            "INCLUDE_CHILDREN": true,
+            "LIMIT_LEVEL": 5
         },
         "ORG_UNITS_GROUPS": {
-            "UIDS" : []
+            "UIDS": []
         }
     },    
-    "DATASETS" : {
-        "DxDuYrrZSa7": "wMCnDAQfGZN"                    
+    "DATASETS": {
+        "DxDuYrrZSa7": "wMCnDAQfGZN",
+        "FULL_PYRAMID": "dbf1uGX1XU3",
+        "ZONES_SANTE": "Om2WgL4TNEy"
     }
 }

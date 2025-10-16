@@ -1,34 +1,45 @@
 import json
 import logging
 
-# from pathlib import Path
 import pandas as pd
 import requests
-from data_point import DataPoint
 from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2 import DHIS2
+
+from .data_point import DataPoint
 
 logger = logging.getLogger(__name__)
 
 
-class DataElementsPusher:
-    """Handles downloading and formatting of data elements from DHIS2."""
+class DHIS2Pusher:
+    """Main class to handle pushing data to DHIS2."""
 
-    def __init__(self, extractor: "DHIS2Pusher"):
-        self.extractor = extractor
+    def __init__(
+        self,
+        dhis2_client: DHIS2,
+        import_strategy: str = "CREATE_AND_UPDATE",
+        dry_run: bool = True,
+        max_post: int = 500,
+    ):
+        self.dhis2_client = dhis2_client
+        if import_strategy not in {"CREATE", "UPDATE", "CREATE_AND_UPDATE"}:
+            raise ValueError("Invalid import strategy (use 'CREATE', 'UPDATE' or 'CREATE_AND_UPDATE')")
+        self.import_strategy = import_strategy
+        self.dry_run = dry_run
+        self.max_post = max_post
 
     def push_data(
         self,
         df_data: pd.DataFrame,
     ) -> None:
         """Push formatted data to DHIS2."""
-        valid, to_delete, to_ignore = self.classify_data_points(df_data)
+        valid, to_delete, to_ignore = self._classify_data_points(df_data)
 
         self._push_valid(valid)
         self._push_removals(to_delete)
-        self.extractor._log_ignored_or_na(to_ignore)
+        self._log_ignored_or_na(to_ignore)
 
-    def classify_data_points(self, data_values: pd.DataFrame) -> tuple[list, list, list]:
+    def _classify_data_points(self, data_values: pd.DataFrame) -> tuple[list, list, list]:
         """Classify data points into valid, to_delete, and not_valid.
 
         Returns:
@@ -37,6 +48,7 @@ class DataElementsPusher:
         if data_values.empty:
             current_run.log_warning("No data to push.")
             return [], [], []
+
         valid = []
         not_valid = []
         to_delete = []
@@ -56,96 +68,40 @@ class DataElementsPusher:
             current_run.log_info("No data to push.")
             return
 
-        msg = f"Pushing {len(data_points_valid)} data elements."
+        msg = f"Pushing {len(data_points_valid)} data points."
         current_run.log_info(msg)
         logger.info(msg)
 
-        summary = self.extractor._push_data_elements(data_point_list=data_points_valid, logging_interval=10000)
-        msg = f"Data elements push summary:  {summary['import_counts']}"
+        summary = self._push_data_points(data_point_list=data_points_valid, logging_interval=20000)
+        msg = f"Data points push summary:  {summary['import_counts']}"
         current_run.log_info(msg)
         logger.info(msg)
-        self.extractor._log_summary_errors(summary)
+        self._log_summary_errors(summary)
 
     def _push_removals(self, data_points_to_remove: pd.DataFrame) -> None:
         if len(data_points_to_remove) == 0:
-            current_run.log_info("No NA data points to push.")
+            # current_run.log_info("No NA data points to push.")
             return
 
-        msg = f"Pushing {len(data_points_to_remove)} data elements with NA values."
-        current_run.log_info(msg)
-        logger.info(msg)
-        summary_na = self.extractor._push_data_elements(data_point_list=data_points_to_remove, logging_interval=10000)
+        current_run.log_info(f"Pushing {len(data_points_to_remove)} data points with NA values.")
+        logger.info(f"Pushing {len(data_points_to_remove)} data points with NA values.")
+        self._log_ignored_or_na(data_points_to_remove, is_na=True)
+        summary_na = self._push_data_points(data_point_list=data_points_to_remove, logging_interval=10000)
 
-        msg = f"Data elements delete summary: {summary_na['import_counts']}"
-        current_run.log_info(msg)
-        logger.info(msg)
-        self.extractor._log_summary_errors(summary_na)
+        current_run.log_info(f"Data points delete summary: {summary_na['import_counts']}")
+        logger.info(f"Data points delete summary: {summary_na['import_counts']}")
+        self._log_summary_errors(summary_na)
 
-
-class IndicatorsPusher:
-    """Handles downloading and formatting of indicators from DHIS2."""
-
-    def __init__(self, extractor: "DHIS2Pusher"):
-        self.extractor = extractor
-
-    def push_data(self, df_data: pd.DataFrame) -> None:
-        """Push formatted indicator data to DHIS2.
-
-        Parameters
-        ----------
-        df_data : pd.DataFrame
-            The DataFrame containing indicator data to be pushed.
-        """
-        return NotImplementedError
-
-
-class ReportingRatesPusher:
-    """Handles downloading and formatting of reporting rates from DHIS2."""
-
-    def __init__(self, extractor: "DHIS2Pusher"):
-        self.extractor = extractor
-
-    def push_data(self, df_data: pd.DataFrame) -> None:
-        """Push formatted indicator data to DHIS2.
-
-        Parameters
-        ----------
-        df_data : pd.DataFrame
-            The DataFrame containing indicator data to be pushed.
-        """
-        return NotImplementedError
-
-
-class DHIS2Pusher:
-    """Main class to handle pushing data to DHIS2."""
-
-    def __init__(
-        self,
-        dhis2_client: DHIS2,
-        import_strategy: str = "CREATE_AND_UPDATE",
-        dry_run: bool = True,
-        max_post: int = 500,
-    ):
-        self.dhis2_client = dhis2_client
-        if import_strategy not in {"CREATE", "UPDATE", "CREATE_AND_UPDATE"}:
-            raise ValueError("Invalid import strategy (use 'CREATE', 'UPDATE' or 'CREATE_AND_UPDATE')")
-        self.import_strategy = import_strategy
-        self.dry_run = dry_run
-        self.max_post = max_post
-        self.data_elements = DataElementsPusher(self)
-        self.indicators = IndicatorsPusher(self)
-        self.reporting_rates = ReportingRatesPusher(self)
-
-    def _log_ignored_or_na(self, data_point_list: list, data_type: str = "DATA_ELEMENT", is_na: bool = False):
+    def _log_ignored_or_na(self, data_point_list: list, is_na: bool = False):
         """Logs ignored or NA data points."""
         if len(data_point_list) > 0:
             current_run.log_info(
                 f"{len(data_point_list)} data points will be  {'updated to NA' if is_na else 'ignored'}. "
                 "Please check the last execution report for details."
             )
-            logger.warning(f"PUSH TASK: {len(data_point_list)} {data_type} data points to be ignored: ")
+            logger.warning(f"{len(data_point_list)} data points to be {'updated to NA' if is_na else 'ignored'}: ")
             for i, ignored in enumerate(data_point_list, start=1):
-                logger.warning(f"{i} Data point {'NA' if is_na else ''} ignored: {ignored}")
+                logger.warning(f"{i} Data point {'NA' if is_na else 'ignored'} : {ignored}")
 
     def _log_summary_errors(self, summary: dict):
         """Logs all the errors in the summary dictionary using the configured logging.
@@ -159,18 +115,20 @@ class DHIS2Pusher:
         else:
             logger.error(f"Logging {len(errors)} error(s) from export summary.")
             for i_e, error in enumerate(errors, start=1):
-                logger.error(f"Error {i_e} : HTTP request failed : {error.get('error', None)}")
-                error_response = error.get("response", None)
+                error_value = error.get("value", None)
+                error_code = error.get("errorCode", None)
+                logger.error(f"Error {i_e} value: {error_value} (DHSI2 errorCode: {error_code})")
+                error_response = error.get("response", None)  # if any (⊙_☉)
                 if error_response:
                     rejected_list = error_response.pop("rejected_datapoints", [])
                     logger.error(f"Error response : {error_response}")
                     for i_r, rejected in enumerate(rejected_list, start=1):
                         logger.error(f"Rejected data point {i_r}: {rejected}")
 
-    def _push_data_elements(
+    def _push_data_points(
         self,
         data_point_list: list[dict],
-        logging_interval: int = 100000,
+        logging_interval: int = 50000,
     ) -> dict:
         """dry_run: This parameter can be set to true to get an import summary without actually importing data (DHIS2).
 
@@ -185,10 +143,9 @@ class DHIS2Pusher:
         }
 
         total_data_points = len(data_point_list)
-        count = 0
+        processed_points = 0
 
         for chunk in self._split_list(data_point_list, self.max_post):
-            count = count + 1
             r = None
             try:
                 r = self.dhis2_client.api.session.post(
@@ -204,7 +161,6 @@ class DHIS2Pusher:
 
                 r.raise_for_status()
                 response = self._safe_json(r)
-                # status = response.get("status") if response else None
 
                 if response:
                     self._update_import_counts(summary, response)
@@ -221,12 +177,18 @@ class DHIS2Pusher:
                 error_response = self._get_response_value_errors(response, chunk=chunk)
                 summary["ERRORS"].append({"error": str(e), "response": error_response})
 
-            if (count * self.max_post) % logging_interval == 0:
+            processed_points += len(chunk)
+
+            # Log every logging_interval points
+            if processed_points // logging_interval > (processed_points - len(chunk)) // logging_interval:
                 current_run.log_info(
-                    f"{count * self.max_post} / {total_data_points} data points pushed "
-                    f"summary: {summary['import_counts']}"
+                    f"{processed_points} / {total_data_points} data points pushed summary: {summary['import_counts']}"
                 )
 
+        # Final summary
+        current_run.log_info(
+            f"{processed_points} / {total_data_points} data points processed. Final summary: {summary['import_counts']}"
+        )
         return summary
 
     def _split_list(self, src_list: list, length: int):
@@ -269,6 +231,9 @@ class DHIS2Pusher:
             return None
 
     def _safe_json(self, r: requests.Response) -> dict | None:
+        if r is None:
+            return None
+
         try:
             return r.json()
         except (ValueError, json.JSONDecodeError):
