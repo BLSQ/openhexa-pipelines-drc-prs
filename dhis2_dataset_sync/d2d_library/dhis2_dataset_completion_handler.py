@@ -126,6 +126,7 @@ class DatasetCompletionSync:
         target_dataset_id: str,
         period: list[str],
         org_units: list[str],
+        logging_interval: int = 2000,
     ) -> None:
         """Sync completion status between datasets."""
         self.import_summary = {
@@ -148,7 +149,7 @@ class DatasetCompletionSync:
                 completed=completion_status.get("completed"),
             )
 
-            if idx % 2000 == 0 or idx == len(org_units):
+            if idx % logging_interval == 0 or idx == len(org_units):
                 current_run.log_info(f"{idx} / {len(org_units)} OUs processed")
 
         current_run.log_info(

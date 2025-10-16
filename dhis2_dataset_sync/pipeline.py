@@ -594,7 +594,7 @@ def push_data(
                 source_ds_id=extract_config.get("SOURCE_DATASET_UID"),
                 target_ds_id=extract_config.get("TARGET_DATASET_UID"),
                 period=period,
-                org_units=extract_data["ORG_UNIT"].unique(),
+                org_units=df_mapped["ORG_UNIT"].unique(),
             )
 
         except Exception as e:
@@ -899,9 +899,17 @@ def handle_dataset_completion(
     if not target_ds_id:
         return
 
-    current_run.log_info(f"Starting dataset '{target_ds_id}' completion for period: {period}")
+    current_run.log_info(
+        f"Starting dataset '{target_ds_id}' completion process for period: {period} org units: {len(org_units)}."
+    )
     try:
-        syncer.sync(source_dataset_id=source_ds_id, target_dataset_id=target_ds_id, period=period, org_units=org_units)
+        syncer.sync(
+            source_dataset_id=source_ds_id,
+            target_dataset_id=target_ds_id,
+            period=period,
+            org_units=org_units,
+            logging_interval=1000,
+        )
     except Exception as e:
         current_run.log_error(f"Error setting dataset completion for dataset {target_ds_id}, period {period}")
         logging.error(f"Error setting dataset completion for dataset {target_ds_id}, period {period}: {e!s}")
