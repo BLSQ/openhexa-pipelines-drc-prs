@@ -193,7 +193,7 @@ def align_org_units(
     )
 
 
-# @dhis2_dataset_sync.task
+@dhis2_dataset_sync.task
 def sync_dataset_organisation_units(
     pipeline_path: Path,
     run_task: bool = True,
