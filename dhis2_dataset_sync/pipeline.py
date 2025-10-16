@@ -28,7 +28,7 @@ from utils import (
 )
 
 
-@pipeline("dhis2_dataset_sync", timeout=28800)  # 8 hours
+@pipeline("dhis2_dataset_sync", timeout=43200)  # 3600 * 12 hours
 @parameter(
     code="run_ou_sync",
     name="Run org units sync (recommended)",
