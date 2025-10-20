@@ -607,7 +607,7 @@ def push_data(
             df_mapped: pd.DataFrame = mapper_func(df=extract_data, extract_config=extract_config)
             # df_mapped[[""]].drop_duplicates().head()
             df_mapped = df_mapped.sort_values(by="ORG_UNIT")  # speed up DHIS2 processing
-            # pusher.push_data(df_data=df_mapped)  ###########################################################################
+            pusher.push_data(df_data=df_mapped)
 
             # Success → dequeue
             push_queue.dequeue()
