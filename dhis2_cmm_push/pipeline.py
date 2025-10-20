@@ -23,6 +23,12 @@ from utils import (
     save_to_parquet,
 )
 
+# Ticket(s) related to this pipeline:
+#   -https://bluesquare.atlassian.net/browse/SAN-121
+#   -https://bluesquare.atlassian.net/browse/SAN-122
+# github repo:
+#   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
+
 
 @pipeline("dhis2_cmm_push")
 @parameter(
