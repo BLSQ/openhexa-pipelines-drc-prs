@@ -3,6 +3,7 @@ __pycache__/
 logging_test/
 *.py[codz]
 *$py.class
+logs_test/
 
 # C extensions
 *.so

@@ -10,8 +10,6 @@ from requests.structures import CaseInsensitiveDict
 
 from .org_unit_point import OrgUnitObj
 
-logger = logging.getLogger(__name__)
-
 
 class DHIS2PyramidAligner:
     """Align organisation units between two DHIS2 instances.
@@ -29,8 +27,8 @@ class DHIS2PyramidAligner:
     as method parameters.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger if logger else logging.getLogger(__name__)
 
     def align_to(
         self,
@@ -115,12 +113,12 @@ class DHIS2PyramidAligner:
                     )
                     if response["status"] == "ERROR":
                         errors_count = errors_count + 1
-                        logger.info(str(response))
+                        self.logger.info(str(response))
                     else:
                         current_run.log_info(f"New organisation unit created: {ou}")
-                        logger.info(f"New organisation unit created: {ou}")
+                        self.logger.info(f"New organisation unit created: {ou}")
                 else:
-                    logger.info(
+                    self.logger.info(
                         str(
                             {
                                 "action": "CREATE",
@@ -187,7 +185,7 @@ class DHIS2PyramidAligner:
                         errors_count = errors_count + 1
                     else:
                         updates_count = updates_count + 1
-                    logger.info(str(response))
+                    self.logger.info(str(response))
 
                 if progress_count % 5000 == 0:
                     current_run.log_info(f"Organisation units checked: {progress_count}/{len(ou_ids_to_check)}")

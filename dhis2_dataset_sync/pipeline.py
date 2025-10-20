@@ -1,4 +1,5 @@
 import logging
+import shutil
 import time
 from datetime import datetime
 from itertools import product
@@ -19,7 +20,7 @@ from openhexa.toolbox.dhis2.dataframe import get_datasets
 from openhexa.toolbox.dhis2.periods import period_from_string
 from requests.exceptions import HTTPError, RequestException
 from utils import (
-    configure_logging,
+    configure_logging_flush,
     connect_to_dhis2,
     load_configuration,
     read_parquet_extract,
@@ -118,7 +119,8 @@ def sync_organisation_units(
         return True
 
     try:
-        configure_logging(logs_path=pipeline_path / "logs" / "org_units", task_name="org_units_sync")
+        logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="org_units_sync")
+
         # load configuration
         config_extract = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
         config_sync = load_configuration(config_path=pipeline_path / "configuration" / "sync_config.json")
@@ -142,10 +144,14 @@ def sync_organisation_units(
             include_children=config_sync["ORG_UNITS"]["SELECTION"].get("INCLUDE_CHILDREN", True),
             limit_level=config_sync["ORG_UNITS"]["SELECTION"].get("LIMIT_LEVEL", None),
             dry_run=config_push["SETTINGS"].get("DRY_RUN", True),
+            logger=logger,
         )
 
     except Exception as e:
         raise Exception(f"Error during pyramid sync: {e}") from e
+    finally:
+        save_logs(logs_file, output_dir=pipeline_path / "logs" / "org_units")
+
     return True
 
 
@@ -157,6 +163,7 @@ def align_org_units(
     include_children: bool,
     limit_level: int | None,
     dry_run: bool = True,
+    logger: logging.Logger | None = None,
 ) -> None:
     """Aligns organisation units between source and target DHIS2 connections.
 
@@ -176,6 +183,8 @@ def align_org_units(
         Select the source pyramid under this limit level.
     dry_run : bool, optional
         If True, performs a dry run without making changes (default is True).
+    logger : logging.Logger, optional
+        Logger instance for logging (default is None).
     """
     extract_pyramid(
         dhis2_client=source_dhis2,
@@ -186,7 +195,7 @@ def align_org_units(
         filename="pyramid_data.parquet",
     )
 
-    DHIS2PyramidAligner().align_to(
+    DHIS2PyramidAligner(logger).align_to(
         target_dhis2=target_dhis2,
         source_pyramid=read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet"),
         dry_run=dry_run,
@@ -215,7 +224,9 @@ def sync_dataset_organisation_units(
 
     try:
         current_run.log_info("Starting dataset organisation units sync.")
-        configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
+        logger, logs_file = configure_logging_flush(
+            logs_path=Path("/home/jovyan/tmp/logs"), task_name="dataset_org_units_sync"
+        )
 
         # load configuration
         config_extract = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
@@ -238,9 +249,13 @@ def sync_dataset_organisation_units(
             dataset_mappings=config_sync.get("DATASETS", {}),
             source_pyramid_path=pipeline_path / "data" / "pyramid" / "pyramid_data.parquet",
             dry_run=config_push["SETTINGS"].get("DRY_RUN", True),
+            logger=logger,
         )
     except Exception as e:
         raise Exception(f"Error during dataset organisation units sync: {e}") from e
+    finally:
+        save_logs(logs_file, output_dir=pipeline_path / "logs" / "dataset_org_units")
+
     return True
 
 
@@ -250,13 +265,15 @@ def align_dataset_org_units(
     dataset_mappings: dict,
     source_pyramid_path: Path,
     dry_run: bool = True,
+    logger: logging.Logger | None = None,
 ) -> None:
     """Aligns organisation units of datasets between source and target DHIS2 connections."""
     if len(dataset_mappings) == 0:
         current_run.log_warning("No dataset IDs provided for sync. Dataset organisation units task skipped.")
         return
 
-    logger = logging.getLogger(__name__)
+    if logger is None:
+        logger = logging.getLogger(__name__)
 
     # NOTE: We need the filtered source pyramid to validate the org units (aligned org units).
     source_pyramid = read_parquet_extract(source_pyramid_path)
@@ -265,11 +282,17 @@ def align_dataset_org_units(
     logger.info(msg)
 
     try:
-        # Retrieve datasets metadata from source & target
         source_datasets = get_datasets(source_dhis2)
+    except Exception as e:
+        current_run.log_error(f"Failed to fetch source datasets: {e!s}")
+        logger.error(f"Failed to fetch source datasets: {e}")
+        return
+
+    try:
         target_datasets = get_datasets(target_dhis2)
     except Exception as e:
-        current_run.log_error(f"Failed to fetch datasets: {e!s}")
+        current_run.log_error(f"Failed to fetch target datasets: {e!s}")
+        logger.error(f"Failed to fetch target datasets: {e}")
         return
 
     # Select only datasets to sync
@@ -411,7 +434,6 @@ def extract_data(
         return
 
     current_run.log_info("Data elements extraction task started.")
-    configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
 
     # load configuration
     extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
@@ -467,8 +489,8 @@ def extract_data(
     dhis2_extractor = DHIS2Extractor(
         dhis2_client=dhis2_client, download_mode=download_settings, return_existing_file=False
     )
-    current_run.log_info(f"Download MODE: {extract_config['SETTINGS']['MODE']} from: {start} to {end}")
 
+    current_run.log_info(f"Download MODE: {extract_config['SETTINGS']['MODE']} from: {start} to {end}")
     handle_data_element_extracts(
         pipeline_path=pipeline_path,
         dhis2_extractor=dhis2_extractor,
@@ -493,7 +515,7 @@ def push_data(
     current_run.log_info("Starting data push.")
 
     # setup
-    configure_logging(logs_path=pipeline_path / "logs" / "push", task_name="push_data")
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="push_data")
     config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
     target_dhis2 = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
     db_path = pipeline_path / "configuration" / ".queue.db"
@@ -506,7 +528,7 @@ def push_data(
     push_wait = config["SETTINGS"].get("PUSH_WAIT_MINUTES", 5)
 
     # log parameters
-    logging.info(f"Import strategy: {import_strategy} - Dry Run: {dry_run} - Max Post elements: {max_post}")
+    logger.info(f"Import strategy: {import_strategy} - Dry Run: {dry_run} - Max Post elements: {max_post}")
     current_run.log_info(
         f"Pushing data with parameters import_strategy: {import_strategy}, dry_run: {dry_run}, max_post: {max_post}"
     )
@@ -517,13 +539,18 @@ def push_data(
         import_strategy=import_strategy,
         dry_run=dry_run,
         max_post=max_post,
+        logger=logger,
     )
 
     # Dataset completion syncer
     source_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     source_dhis2 = connect_to_dhis2(connection_str=source_config["SETTINGS"]["SOURCE_DHIS2_CONNECTION"], cache_dir=None)
     completion_syncer = DatasetCompletionSync(
-        source_dhis2=source_dhis2, target_dhis2=target_dhis2, import_strategy=import_strategy, dry_run=dry_run
+        source_dhis2=source_dhis2,
+        target_dhis2=target_dhis2,
+        import_strategy=import_strategy,
+        dry_run=dry_run,
+        logger=logger,
     )
 
     # Map data types to their respective mapping functions
@@ -560,14 +587,6 @@ def push_data(
             data_type = extract_data["DATA_TYPE"].unique()[0]
             period = extract_data["PERIOD"].unique()[0]
 
-            # Set values of 'REPORTING_RATE' from '100' -> '1' (specific to DRC PRS project)
-            mask = (extract_data.DATA_TYPE == "REPORTING_RATE") & (
-                extract_data.RATE_TYPE.isin(["REPORTING_RATE", "REPORTING_RATE_ON_TIME"])
-            )
-            extract_data.loc[mask, "VALUE"] = extract_data.loc[mask, "VALUE"].apply(
-                lambda x: str(int(float(x) / 100)) if pd.notna(x) else x
-            )
-
             current_run.log_info(f"Pushing data for extract {extract_id}: {extract_path.name}.")
             if data_type not in dispatch_map:
                 current_run.log_warning(f"Unknown DATA_TYPE '{data_type}' in extract: {extract_path.name}. Skipping.")
@@ -578,11 +597,17 @@ def push_data(
             cfg_list, mapper_func = dispatch_map[data_type]
             extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
 
+            # filter by the org units which are part of the target dataset (if set)
+            if extract_config.get("TARGET_DATASET_UID"):
+                extract_data = filter_by_dataset_org_units(
+                    target_dhis2=target_dhis2, data=extract_data, dataset_id=extract_config.get("TARGET_DATASET_UID")
+                )
+
             # Apply mapping and push data
             df_mapped: pd.DataFrame = mapper_func(df=extract_data, extract_config=extract_config)
             # df_mapped[[""]].drop_duplicates().head()
             df_mapped = df_mapped.sort_values(by="ORG_UNIT")  # speed up DHIS2 processing
-            pusher.push_data(df_data=df_mapped)
+            # pusher.push_data(df_data=df_mapped)  ###########################################################################
 
             # Success → dequeue
             push_queue.dequeue()
@@ -593,14 +618,64 @@ def push_data(
                 completion_syncer,
                 source_ds_id=extract_config.get("SOURCE_DATASET_UID"),
                 target_ds_id=extract_config.get("TARGET_DATASET_UID"),
+                dhis2_pyramid=read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet"),
                 period=period,
                 org_units=df_mapped["ORG_UNIT"].unique(),
             )
 
         except Exception as e:
-            current_run.log_error(f"Fatal error for extract {extract_id} ({extract_path.name}), stopping push process.")
-            logging.error(f"Fatal error for extract {extract_id} ({extract_path.name}): {e!s}")
+            current_run.log_error(
+                f"Fatal error for extract {extract_id} ({extract_path.name}), stopping push process. Error: {e!s}"
+            )
             raise  # crash on error
+
+        finally:
+            save_logs(logs_file, output_dir=pipeline_path / "logs" / "push")
+
+
+def save_logs(logs_file: Path, output_dir: Path) -> None:
+    """Moves all .log files from logs_path to output_dir."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if logs_file.is_file():
+        dest_file = output_dir / logs_file.name
+        shutil.copy(logs_file.as_posix(), dest_file.as_posix())
+
+
+def filter_by_dataset_org_units(target_dhis2: DHIS2, data: pd.DataFrame, dataset_id: str) -> pd.DataFrame:
+    """Filters the provided data to include only rows with organisation units present in the specified DHIS2 dataset.
+
+    Parameters
+    ----------
+    target_dhis2 : DHIS2
+        DHIS2 client for the target instance.
+    data : pd.DataFrame
+        DataFrame containing the data to be filtered.
+    dataset_id : str
+        The ID of the dataset whose organisation units will be used for filtering.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame containing only rows with organisation units present in the dataset.
+    """
+    # GET current dataset from PRS DHIS2
+    url = f"{target_dhis2.api.url}/dataSets/{dataset_id}"
+    try:
+        dataset_payload = dhis2_request(target_dhis2.api.session, "get", url)
+    except requests.RequestException as e:
+        current_run.log_warning(f"Network/HTTP error during payload fetch for dataset {dataset_id} alignment: {e!s}")
+        return data
+    except Exception as e:
+        current_run.log_warning(f"Unexpected error during payload fetch for dataset {dataset_id} alignment: {e!s}")
+        return data
+
+    ds_uids = [ou["id"] for ou in dataset_payload["organisationUnits"]]
+    data_filtered = data[data["ORG_UNIT"].isin(ds_uids)]
+    current_run.log_info(
+        f"Extract filtered by dataset {dataset_id} OUs {len(ds_uids)}, "
+        f"rows removed {data.shape[0] - data_filtered.shape[0]}"
+    )
+    return data_filtered
 
 
 def handle_data_element_extracts(
@@ -616,6 +691,7 @@ def handle_data_element_extracts(
         current_run.log_info("No data elements to extract.")
         return
 
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="extract_data")
     current_run.log_info("Starting data element extracts.")
     try:
         # loop over the available extract configurations
@@ -662,13 +738,14 @@ def handle_data_element_extracts(
                     current_run.log_warning(
                         f"Extract {extract_id} download failed for period {period}, skipping to next extract."
                     )
-                    logging.error(f"Extract {extract_id} - period {period} error: {e!s}")
+                    logger.error(f"Extract {extract_id} - period {period} error: {e}")
                     break  # skip to next extract
 
             current_run.log_info(f"Extract {extract_id} finished.")
 
     finally:
         push_queue.enqueue("FINISH")
+        save_logs(logs_file, output_dir=pipeline_path / "logs" / "extract")
 
 
 def resolve_dataset_metrics(
@@ -695,7 +772,9 @@ def resolve_dataset_metrics(
     return ds_metrics
 
 
-def apply_data_element_extract_config(df: pd.DataFrame, extract_config: dict) -> pd.DataFrame:
+def apply_data_element_extract_config(
+    df: pd.DataFrame, extract_config: dict, logger: logging.Logger | None = None
+) -> pd.DataFrame:
     """Applies data element mappings to the extracted data.
 
     It also filters data elements based on category option combo (COC) if specified in the extract configuration.
@@ -706,6 +785,8 @@ def apply_data_element_extract_config(df: pd.DataFrame, extract_config: dict) ->
         DataFrame containing the extracted data.
     extract_config : dict
         This is a dictionary containing the extract mappings.
+    logger : logging.Logger, optional
+        Logger instance for logging (default is None).
 
     Returns
     -------
@@ -751,7 +832,7 @@ def apply_data_element_extract_config(df: pd.DataFrame, extract_config: dict) ->
 
     if len(chunks) == 0:
         current_run.log_warning("No data elements matched the provided mappings, returning empty dataframe.")
-        logging.warning("No data elements matched the provided mappings, returning empty dataframe.")
+        logger.warning("No data elements matched the provided mappings, returning empty dataframe.")
         return pd.DataFrame(columns=df.columns)
 
     df_filtered = pd.concat(chunks, ignore_index=True)
@@ -767,6 +848,7 @@ def apply_data_element_extract_config(df: pd.DataFrame, extract_config: dict) ->
 def apply_reporting_rates_extract_config(
     df: pd.DataFrame,
     extract_config: dict,
+    logger: logging.Logger | None = None,
 ) -> pd.DataFrame:
     """Handles the mappings of reporting rates."""
     raise NotImplementedError("Reporting rates mappings is not yet implemented.")
@@ -775,7 +857,8 @@ def apply_reporting_rates_extract_config(
 def apply_indicators_extract_config(
     df: pd.DataFrame,
     extract_config: dict,
-):
+    logger: logging.Logger | None = None,
+) -> pd.DataFrame:
     """Handles the mappings of reporting rates."""
     raise NotImplementedError("Indicator mappings is are not yet implemented.")
 
@@ -888,7 +971,12 @@ def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: an
 
 
 def handle_dataset_completion(
-    syncer: DatasetCompletionSync, source_ds_id: str, target_ds_id: str, period: str, org_units: list[str]
+    syncer: DatasetCompletionSync,
+    source_ds_id: str,
+    target_ds_id: str,
+    dhis2_pyramid: pd.DataFrame,
+    period: str,
+    org_units: list[str],
 ) -> None:
     """Sets datasets as complete for the pushed periods.
 
@@ -906,13 +994,14 @@ def handle_dataset_completion(
         syncer.sync(
             source_dataset_id=source_ds_id,
             target_dataset_id=target_ds_id,
+            dhis2_pyramid=dhis2_pyramid,
+            level=2,
             period=period,
             org_units=org_units,
-            logging_interval=1000,
+            logging_interval=2000,
         )
     except Exception as e:
-        current_run.log_error(f"Error setting dataset completion for dataset {target_ds_id}, period {period}")
-        logging.error(f"Error setting dataset completion for dataset {target_ds_id}, period {period}: {e!s}")
+        current_run.log_error(f"Error setting completions for dataset {target_ds_id}, period {period} - Error: {e!s}.")
 
 
 def handle_full_pyramid_mapping(target_dhis2: DHIS2, source_ds_selection: pl.DataFrame) -> pl.DataFrame:
