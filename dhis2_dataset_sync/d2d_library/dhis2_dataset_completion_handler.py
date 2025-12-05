@@ -232,7 +232,7 @@ class DatasetCompletionSync:
 
         if self.import_summary["errors"]["fetch_errors"] > 0:
             msg = (
-                f"{len(self.import_summary['errors']['fetch_errors'])} out of "
+                f"{self.import_summary['errors']['fetch_errors']} out of "
                 f"{len(org_units)} completion statuses failed to fetch."
             )
             current_run.log_warning(msg)
@@ -240,7 +240,7 @@ class DatasetCompletionSync:
 
         if self.import_summary["errors"]["push_errors"] > 0:
             msg = (
-                f"{len(self.import_summary['errors']['push_errors'])} "
+                f"{self.import_summary['errors']['push_errors']} "
                 f"out of {len(org_units)} completion statuses failed to push."
             )
             current_run.log_warning(msg)
@@ -268,7 +268,6 @@ class DatasetCompletionSync:
             return
 
         if status == "SUCCESS":
-            self.import_summary["errors"]["push_errors"] += 1
             self.logger.info(f"Successfully pushed to target completion ds: {ds} pe:{pe} ou: {ou}")
             self._update_import_summary(response=json_or_none)
 

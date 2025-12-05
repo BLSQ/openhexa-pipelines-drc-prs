@@ -435,7 +435,7 @@ def update_dataset_org_units(
 
     except Exception as e:
         current_run.log_error("An error occurred during dataset org units update. Process stopped.")
-        logging.error(f"An error occurred during dataset org units update: {e!s}")
+        logging.error(f"An error occurred during dataset org units update: {e}")
         raise
 
     return True
@@ -485,8 +485,8 @@ def push_dataset_org_units(
     if "error" in dataset_payload:
         return dataset_payload
 
-    # Step 2: Update organisationUnits
-    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in new_org_units]
+    # Step 2: Update organisationUnits (just push the source OUs)
+    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in source_ous]
 
     # Step 3: PUT updated dataset
     update_response = dhis2_request(
@@ -497,7 +497,7 @@ def push_dataset_org_units(
         current_run.log_info(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
         logging.error(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
     else:
-        msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: {len(new_org_units)}"
+        msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: {len(source_ous)}"
         current_run.log_info(msg)
         logging.info(msg)
 
