@@ -40,40 +40,6 @@ from utils import (
     help="Extract data elements from source DHIS2.",
 )
 
-# exhaustivity calculation (cursor stuff here)
-@parameter(
-    code="exhaustivity_value",
-    name="Exhaustivity Value",
-    type=int,
-    default=0,
-    help="Computed exhaustivity value after extracting data (1 if all required fields are filled, else 0).",
-)
-def compute_and_log_exhaustivity(pipeline_path: Path, run_task: bool = True) -> int:
-    """
-    Computes exhaustivity based on extracted data after extraction is complete.
-
-    Args:
-        pipeline_path (Path): The root path for the pipeline.
-        run_task (bool): Whether to run the computation.
-
-    Returns:
-        int: Exhaustivity value (1 or 0)
-    """
-    if not run_task:
-        current_run.log_info("Exhaustivity calculation skipped.")
-        return 0
-
-    data_file = pipeline_path / "output" / "extract_data.parquet"
-    if not data_file.exists():
-        current_run.log_error(f"Extracted data file {data_file} not found for exhaustivity calculation.")
-        return 0
-
-    df = pd.read_parquet(data_file)
-    value = compute_exhaustivity(df)
-    current_run.log_info(f"Exhaustivity value computed: {value}")
-    return value
-
-
 # push data to target DHIS2
 @parameter(
     code="run_push_data",
@@ -82,14 +48,13 @@ def compute_and_log_exhaustivity(pipeline_path: Path, run_task: bool = True) -> 
     default=True,
     help="Push data to target DHIS2.",
 )
-def dhis2_cmm_push(run_extract_data: bool, run_push_data: bool):
+def dhis2_exhaustivity(run_extract_data: bool, run_push_data: bool):
     """Extract data elements from the PRS DHIS2 instance.
 
-    Compute the CMM (Consomation mensuelle moyenne) over a 6-month rolling window
-     the results are then push back to PRS DHIS2 to the target CMM data elements.
-    NOTE: Theres no need for organisation unit alignment between source and target.
+    Compute the exhaustivity value based on required columns completeness.
+    The results are then pushed back to PRS DHIS2 to the target exhaustivity data elements.
     """
-    pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_cmm_push"
+    pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_exhaustivity"
 
     try:
         extract_data(
@@ -113,7 +78,7 @@ def dhis2_cmm_push(run_extract_data: bool, run_push_data: bool):
         raise
 
 
-@dhis2_cmm_push.task
+@dhis2_exhaustivity.task
 def extract_data(
     pipeline_path: Path,
     run_task: bool = True,
@@ -182,14 +147,12 @@ def extract_data(
         extract_periods=get_periods(start_cmm, end),
     )
 
-    # Collect the downloaded files and compute CMM.
+    # Collect the downloaded files and compute exhaustivity.
     target_extract = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])[0]
-    compute_cmm_and_queue(
+    compute_exhaustivity_and_queue(
         pipeline_path=pipeline_path,
         extract_id=target_extract.get("EXTRACT_UID"),
-        data_elements=target_extract.get("UIDS", []),
-        cmm_window=cmm_window,
-        cmm_periods=get_periods(start, end),
+        exhaustivity_periods=get_periods(start, end),
         push_queue=push_queue,
     )
 
@@ -326,15 +289,13 @@ def get_periods(start: str, end: str) -> list[str]:
         raise Exception(f"Error in start/end date configuration: {e!s}") from e
 
 
-def compute_cmm_and_queue(
+def compute_exhaustivity_and_queue(
     pipeline_path: Path,
     extract_id: str,
-    data_elements: list[str],
-    cmm_window: int,
-    cmm_periods: list[str],
+    exhaustivity_periods: list[str],
     push_queue: Queue,
 ) -> None:
-    """Computes CMM from extracted data and enqueues the result for pushing.
+    """Computes exhaustivity from extracted data and enqueues the result for pushing.
 
     Parameters
     ----------
@@ -342,76 +303,56 @@ def compute_cmm_and_queue(
         Path to the pipeline directory.
     extract_id : str
         Identifier for the data extract.
-    data_elements : list[str]
-        List of data element UIDs to consider for CMM computation.
-    cmm_window : int
-        Number of months to consider for CMM computation.
-    cmm_periods : list[str]
+    exhaustivity_periods : list[str]
         List of periods to process.
     push_queue : Queue
-        Queue to enqueue the CMM result file for pushing.
+        Queue to enqueue the exhaustivity result file for pushing.
     """
     extracts_folder = pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}"
-    output_dir = pipeline_path / "data" / "cmm"
+    output_dir = pipeline_path / "data" / "exhaustivity"
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
-        for period in cmm_periods:
-            current_run.log_info(f"Computing CMM for period: {period} using a {cmm_window}-month window.")
-            start_cmm = (datetime.strptime(period, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
-            end_cmm = (datetime.strptime(period, "%Y%m") - relativedelta(months=1)).strftime("%Y%m")
-            target_periods = get_periods(start_cmm, end_cmm)
+        for period in exhaustivity_periods:
+            current_run.log_info(f"Computing exhaustivity for period: {period}.")
+            
+            # For exhaustivity, we need to read the data for the current period
+            period_file = extracts_folder / f"data_{period}.parquet"
+            
+            if not period_file.exists():
+                current_run.log_warning(f"Parquet file not found for period {period} in {extracts_folder}")
+                continue
 
-            files_to_read = {
-                p: (extracts_folder / f"data_{p}.parquet") if (extracts_folder / f"data_{p}.parquet").exists() else None
-                for p in target_periods
-            }
-            missing_extracts = [k for k, v in files_to_read.items() if not v]
-
-            if len(missing_extracts) == len(target_periods):
-                raise FileNotFoundError(f"No parquet files found for {target_periods} in {extracts_folder}")
-
-            if missing_extracts:
-                current_run.log_warning(
-                    f"Expected {len(target_periods)} parquet files for CMM computation period {period}, "
-                    f"but missing files for periods: {missing_extracts}."
-                )
-
-            try:
-                df = pl.concat([pl.read_parquet(f) for f in files_to_read.values() if f is not None])
-            except Exception as e:
-                raise RuntimeError(f"Error reading parquet files for CMM computation: {e!s}") from e
-
-            # PRS specific filter (!)
-            df = df.filter((pl.col("CATEGORY_OPTION_COMBO") == "cjeG5HSWRIU") & (pl.col("DX_UID").is_in(data_elements)))
-            df = df.with_columns(pl.col("VALUE").cast(pl.Float64))
-            df_avg = df.group_by(["DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO"]).agg(
-                [pl.col("VALUE").mean().alias("AVG_VALUE")]
+            # Compute exhaustivity value for this period using the function from exhaustivity_calculation
+            exhaustivity_value = compute_exhaustivity(
+                pipeline_path=pipeline_path,
+                extract_id=extract_id,
+                periods=[period],
             )
 
             # Format for DHIS2 import
-            df_final = format_for_import(df_avg, period)
+            df_final = format_for_exhaustivity_import(exhaustivity_value, period)
 
             try:
                 save_to_parquet(
-                    data=df_final.to_pandas(),  # convert to pandas for saving ¯\\_(ツ)_/¯
-                    filename=output_dir / f"cmm_{period}.parquet",
+                    data=df_final,
+                    filename=output_dir / f"exhaustivity_{period}.parquet",
                 )
-                push_queue.enqueue(f"{extract_id}|{output_dir / f'cmm_{period}.parquet'}")
+                push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
             except Exception as e:
-                logging.error(f"CMM saving error: {e!s}")
-                current_run.log_error(f"Error saving CMM parquet file for period {period}.")
+                logging.error(f"Exhaustivity saving error: {e!s}")
+                current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
     finally:
-        current_run.log_info("CMM computation finished.")
+        current_run.log_info("Exhaustivity computation finished.")
         push_queue.enqueue("FINISH")
 
 
-def format_for_import(df: pl.DataFrame, period: str) -> pd.DataFrame:
-    """Formats the aggregated CMM data for DHIS2 import by adding required columns and renaming fields.
+def format_for_exhaustivity_import(exhaustivity_value: int, period: str) -> pd.DataFrame:
+    """Formats the exhaustivity value for DHIS2 import by creating a DataFrame with required columns.
 
     Parameters
     ----------
-    df : pl.DataFrame
-        The aggregated data as a Polars DataFrame.
+    exhaustivity_value : int
+        The exhaustivity value (0 or 1).
     period : str
         The period string to assign to the output data.
 
@@ -420,23 +361,20 @@ def format_for_import(df: pl.DataFrame, period: str) -> pd.DataFrame:
     pd.DataFrame
         A DataFrame formatted for DHIS2 import.
     """
-    df_final = df.clone()  # avoid modifying the original
-    return (
-        df_final
-        # Add new columns
-        .with_columns(
-            [
-                pl.lit("DATA_ELEMENT").alias("DATA_TYPE"),
-                pl.lit(None).alias("ATTRIBUTE_OPTION_COMBO"),
-                pl.lit(None).alias("RATE_TYPE"),
-                pl.lit("AGGREGATED").alias("DOMAIN_TYPE"),
-                pl.lit(period).alias("PERIOD"),
-            ]
-        ).rename({"AVG_VALUE": "VALUE"})
-    )
+    # Create a DataFrame with the exhaustivity value
+    # Note: This structure may need to be adjusted based on your specific DHIS2 data element structure
+    # For now, creating a minimal structure that can be extended
+    return pd.DataFrame({
+        "DATA_TYPE": ["DATA_ELEMENT"],
+        "ATTRIBUTE_OPTION_COMBO": [None],
+        "RATE_TYPE": [None],
+        "DOMAIN_TYPE": ["AGGREGATED"],
+        "PERIOD": [period],
+        "VALUE": [exhaustivity_value],
+    })
 
 
-@dhis2_cmm_push.task
+@dhis2_exhaustivity.task
 def update_dataset_org_units(
     pipeline_path: Path,
     run_task: bool = True,
@@ -541,7 +479,7 @@ def push_dataset_org_units(
     return update_response
 
 
-@dhis2_cmm_push.task
+@dhis2_exhaustivity.task
 def push_data(
     pipeline_path: Path,
     run_task: bool = True,
@@ -793,4 +731,4 @@ def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: an
 
 
 if __name__ == "__main__":
-    dhis2_cmm_push()
+    dhis2_exhaustivity()
