@@ -31,7 +31,7 @@ from utils import (
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
 # extract data from source DHIS2
-@pipeline("dhis2_cmm_push")
+@pipeline("dhis2_exhaustivity")
 @parameter(
     code="run_extract_data",
     name="Extract data",
