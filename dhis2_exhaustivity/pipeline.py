@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import polars as pl
 import requests
+from exhaustivity_calculation import compute_exhaustivity
 from d2d_library.db_queue import Queue
 from d2d_library.dhis2_extract_handlers import DHIS2Extractor
 from d2d_library.dhis2_pusher import DHIS2Pusher
@@ -39,7 +40,39 @@ from utils import (
     help="Extract data elements from source DHIS2.",
 )
 
-# exhaustivity calculation
+# exhaustivity calculation (cursor stuff here)
+@parameter(
+    code="exhaustivity_value",
+    name="Exhaustivity Value",
+    type=int,
+    default=0,
+    help="Computed exhaustivity value after extracting data (1 if all required fields are filled, else 0).",
+)
+def compute_and_log_exhaustivity(pipeline_path: Path, run_task: bool = True) -> int:
+    """
+    Computes exhaustivity based on extracted data after extraction is complete.
+
+    Args:
+        pipeline_path (Path): The root path for the pipeline.
+        run_task (bool): Whether to run the computation.
+
+    Returns:
+        int: Exhaustivity value (1 or 0)
+    """
+    if not run_task:
+        current_run.log_info("Exhaustivity calculation skipped.")
+        return 0
+
+    data_file = pipeline_path / "output" / "extract_data.parquet"
+    if not data_file.exists():
+        current_run.log_error(f"Extracted data file {data_file} not found for exhaustivity calculation.")
+        return 0
+
+    df = pd.read_parquet(data_file)
+    value = compute_exhaustivity(df)
+    current_run.log_info(f"Exhaustivity value computed: {value}")
+    return value
+
 
 # push data to target DHIS2
 @parameter(
