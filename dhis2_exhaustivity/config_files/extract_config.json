@@ -1,7 +1,8 @@
 {
     "SETTINGS":{
         "SOURCE_DHIS2_CONNECTION": "drc-prs",
-        "NUMBER_MONTHS_WINDOW": 3,
+        "EXHAUSTIVITY_PERIODS_WINDOW": 3,
+        "EXTRACTION_MONTHS_WINDOW": 6,
 		"STARTDATE": "202501",
 		"ENDDATE": "202508",
         "MODE": "DOWNLOAD_REPLACE"
@@ -52,6 +53,7 @@
                     "doMlZ2uA9kF"
         
                 ],
+                "DATASET_UID": null,
                 "ORG_UNITS_LEVEL": 5,
                 "FREQUENCY": "MONTHLY"
             },
@@ -108,7 +110,8 @@
                     "oh9mZEsP4gm",
                     "xISwOEjnYUw"
                 ],
-                "ORG_UNITS_LEVEL": 5,
+                "DATASET_UID": null,
+                "ORG_UNITS_LEVEL": 3,
                 "FREQUENCY": "MONTHLY"
             }
            

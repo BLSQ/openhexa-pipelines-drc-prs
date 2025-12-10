@@ -13,7 +13,7 @@ from d2d_library.dhis2_pusher import DHIS2Pusher
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
-from openhexa.toolbox.dhis2.dataframe import get_datasets
+from openhexa.toolbox.dhis2.dataframe import get_datasets, get_organisation_units
 from openhexa.toolbox.dhis2.periods import period_from_string
 from requests.exceptions import HTTPError, RequestException
 from utils import (
@@ -104,9 +104,9 @@ def extract_data(
     push_queue = Queue(db_path)
 
     try:
-        months_lag = extract_config["SETTINGS"].get("NUMBER_MONTHS_WINDOW", 3)  # default 3 months window
+        exhaustivity_periods_window = extract_config["SETTINGS"].get("EXHAUSTIVITY_PERIODS_WINDOW", 3)  # default 3 months window for exhaustivity periods
         if not extract_config["SETTINGS"].get("STARTDATE"):
-            start = (datetime.now() - relativedelta(months=months_lag)).strftime("%Y%m")
+            start = (datetime.now() - relativedelta(months=exhaustivity_periods_window)).strftime("%Y%m")
         else:
             start = extract_config["SETTINGS"].get("STARTDATE")
         if not extract_config["SETTINGS"].get("ENDDATE"):
@@ -116,11 +116,11 @@ def extract_data(
     except Exception as e:
         raise Exception(f"Error in start/end date configuration: {e}") from e
 
-    # Adjust the start date to consider the 6 months windows necessary for computation
-    cmm_window = extract_config["SETTINGS"].get("CMM_MONTHS_WINDOW", 6)
-    start_cmm = (datetime.strptime(start, "%Y%m") - relativedelta(months=cmm_window)).strftime(
+    # Adjust the start date to consider the extraction window necessary for exhaustivity computation
+    extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
+    start_extraction = (datetime.strptime(start, "%Y%m") - relativedelta(months=extraction_window)).strftime(
         "%Y%m"
-    )  # consider 6 months in the past to compute current CMM
+    )  # consider extraction window months in the past to ensure all required data is available
 
     # limits
     dhis2_client.data_value_sets.MAX_DATA_ELEMENTS = 100
@@ -137,14 +137,15 @@ def extract_data(
         dhis2_client=dhis2_client, download_mode=download_settings, return_existing_file=False
     )
     current_run.log_info(
-        f"Download MODE: {extract_config['SETTINGS']['MODE']} from: {start_cmm} ({cmm_window} cmm window) to {end}"
+        f"Download MODE: {extract_config['SETTINGS']['MODE']} from: {start_extraction} ({extraction_window} months extraction window) to {end}"
     )
 
     handle_data_element_extracts(
         pipeline_path=pipeline_path,
         dhis2_extractor=dhis2_extractor,
         data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
-        extract_periods=get_periods(start_cmm, end),
+        extract_periods=get_periods(start_extraction, end),
+        extract_config=extract_config,
     )
 
     # Collect the downloaded files and compute exhaustivity.
@@ -162,6 +163,7 @@ def handle_data_element_extracts(
     dhis2_extractor: DHIS2Extractor,
     data_element_extracts: list,
     extract_periods: list[str],
+    extract_config: dict = None,
 ):
     """Handles data elements extracts based on the configuration."""
     if len(data_element_extracts) == 0:
@@ -170,6 +172,7 @@ def handle_data_element_extracts(
 
     current_run.log_info("Starting data element extracts.")
     source_datasets = get_datasets(dhis2_extractor.dhis2_client)
+    full_pyramid = get_organisation_units(dhis2_extractor.dhis2_client)
 
     # loop over the available extract configurations
     for idx, extract in enumerate(data_element_extracts):
@@ -197,8 +200,21 @@ def handle_data_element_extracts(
             continue
 
         # get org units from the dataset directly
-        source_dataset = source_datasets.filter(pl.col("id").is_in([dataset_uid]))
-        org_units = source_dataset["organisation_units"].explode().to_list()
+        if dataset_uid is not None:
+            source_dataset = source_datasets.filter(pl.col("id").is_in([dataset_uid]))
+            org_units = source_dataset["organisation_units"].explode().to_list()
+        else:
+            org_units = full_pyramid.filter(pl.col("level") == org_units_level)["id"].to_list()
+        
+        # Limit org units for testing if MAX_ORG_UNITS_FOR_TEST is set in config
+        if extract_config and extract_config.get("SETTINGS", {}).get("MAX_ORG_UNITS_FOR_TEST"):
+            max_org_units = extract_config["SETTINGS"]["MAX_ORG_UNITS_FOR_TEST"]
+            original_count = len(org_units)
+            if len(org_units) > max_org_units:
+                org_units = org_units[:max_org_units]
+                current_run.log_info(
+                    f"Limited to {max_org_units} org units for testing (from {original_count} total)"
+                )
 
         current_run.log_info(
             f"Starting data elements extract ID: '{extract_id}' ({idx + 1}) "
@@ -247,14 +263,15 @@ def check_validate_and_save_extract(data_elements: list[str], repo_path: Path, p
     """
     if not (repo_path / f"data_{period}.parquet").is_file():
         return False
-    df = read_parquet_extract(repo_path / f"data_{period}.parquet")
+    # Read with polars
+    df_pl = pl.read_parquet(repo_path / f"data_{period}.parquet")
     output.mkdir(parents=True, exist_ok=True)
-    df_selection = df[df["DX_UID"].isin(data_elements)].copy()
-    if df_selection.empty:
+    df_selection = df_pl.filter(pl.col("DX_UID").is_in(data_elements))
+    if len(df_selection) == 0:
         current_run.log_info(f"No data found for period {period} in the selected data elements. Warning.")
         return False
-    num_found = df_selection["DX_UID"].nunique()
-    df_selection.to_parquet(output / f"data_{period}.parquet", index=False)
+    num_found = df_selection["DX_UID"].n_unique()
+    df_selection.write_parquet(output / f"data_{period}.parquet")
     current_run.log_info(
         f"Extract for period {period} created from existing data. "
         f"Data elements found: {num_found}/{len(data_elements)}."
@@ -322,15 +339,53 @@ def compute_exhaustivity_and_queue(
                 current_run.log_warning(f"Parquet file not found for period {period} in {extracts_folder}")
                 continue
 
-            # Compute exhaustivity value for this period using the function from exhaustivity_calculation
-            exhaustivity_value = compute_exhaustivity(
+            # Get expected DX_UIDs and ORG_UNITs from extract configuration
+            # Load extract config to get expected data elements
+            from utils import load_configuration
+            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+            
+            # Find the extract configuration
+            extract_config_item = None
+            for extract_item in extract_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
+                if extract_item.get("EXTRACT_UID") == extract_id:
+                    extract_config_item = extract_item
+                    break
+            
+            expected_dx_uids = None
+            expected_org_units = None
+            
+            if extract_config_item:
+                expected_dx_uids = extract_config_item.get("UIDS", [])
+                # Get expected org units from the extracted data (all unique ORG_UNITs across all periods)
+                # This ensures we include all org units that have data for any period
+                try:
+                    # Read all parquet files to get all org units
+                    all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                    if all_period_files:
+                        all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                        expected_org_units = all_data["ORG_UNIT"].unique().to_list()
+                except Exception as e:
+                    current_run.log_warning(f"Could not determine expected org units: {e}")
+                    expected_org_units = None
+            
+            # Compute exhaustivity values for this period (returns DataFrame with PERIOD, DX_UID, ORG_UNIT, EXHAUSTIVITY_VALUE)
+            exhaustivity_df = compute_exhaustivity(
                 pipeline_path=pipeline_path,
                 extract_id=extract_id,
                 periods=[period],
+                expected_dx_uids=expected_dx_uids,
+                expected_org_units=expected_org_units,
             )
 
+            # Filter for the current period (in case multiple periods were processed)
+            period_exhaustivity = exhaustivity_df.filter(pl.col("PERIOD") == period)
+            
+            if len(period_exhaustivity) == 0:
+                current_run.log_warning(f"No exhaustivity data computed for period {period}")
+                continue
+
             # Format for DHIS2 import
-            df_final = format_for_exhaustivity_import(exhaustivity_value, period)
+            df_final = format_for_exhaustivity_import(period_exhaustivity)
 
             try:
                 save_to_parquet(
@@ -346,32 +401,41 @@ def compute_exhaustivity_and_queue(
         push_queue.enqueue("FINISH")
 
 
-def format_for_exhaustivity_import(exhaustivity_value: int, period: str) -> pd.DataFrame:
-    """Formats the exhaustivity value for DHIS2 import by creating a DataFrame with required columns.
+def format_for_exhaustivity_import(exhaustivity_df: pl.DataFrame) -> pd.DataFrame:
+    """Formats the exhaustivity DataFrame for DHIS2 import.
 
     Parameters
     ----------
-    exhaustivity_value : int
-        The exhaustivity value (0 or 1).
-    period : str
-        The period string to assign to the output data.
+    exhaustivity_df : pl.DataFrame
+        DataFrame with columns: PERIOD, DX_UID, ORG_UNIT, EXHAUSTIVITY_VALUE
 
     Returns
     -------
     pd.DataFrame
-        A DataFrame formatted for DHIS2 import.
+        A DataFrame formatted for DHIS2 import with columns:
+        DATA_TYPE, DX_UID, PERIOD, ORG_UNIT, VALUE, etc.
     """
-    # Create a DataFrame with the exhaustivity value
-    # Note: This structure may need to be adjusted based on your specific DHIS2 data element structure
-    # For now, creating a minimal structure that can be extended
-    return pd.DataFrame({
-        "DATA_TYPE": ["DATA_ELEMENT"],
-        "ATTRIBUTE_OPTION_COMBO": [None],
-        "RATE_TYPE": [None],
-        "DOMAIN_TYPE": ["AGGREGATED"],
-        "PERIOD": [period],
-        "VALUE": [exhaustivity_value],
-    })
+    # Format for DHIS2 import using polars
+    # Each row represents an exhaustivity value for a (PERIOD, DX_UID, ORG_UNIT) combination
+    df_final = exhaustivity_df.with_columns([
+        pl.lit("DATA_ELEMENT").alias("DATA_TYPE"),
+        pl.col("EXHAUSTIVITY_VALUE").cast(pl.Int64).alias("VALUE"),
+        pl.lit(None).alias("ATTRIBUTE_OPTION_COMBO"),
+        pl.lit(None).alias("RATE_TYPE"),
+        pl.lit("AGGREGATED").alias("DOMAIN_TYPE"),
+    ]).select([
+        "DATA_TYPE",
+        "DX_UID",
+        "PERIOD",
+        "ORG_UNIT",
+        "VALUE",
+        "ATTRIBUTE_OPTION_COMBO",
+        "RATE_TYPE",
+        "DOMAIN_TYPE",
+    ])
+    
+    # Convert to pandas only at the end for DHIS2Pusher compatibility
+    return df_final.to_pandas()
 
 
 @dhis2_exhaustivity.task
@@ -396,7 +460,7 @@ def update_dataset_org_units(
         current_run.log_info("Starting update of dataset organisation units.")
 
         # Previously the source dataset has been sync with SNIS by pipeline dhis2_dataset_sync.
-        # Sync OU: PRS C- SIGL FOSA-Import SNIS SANRU (wMCnDAQfGZN) -> PRS CMM - OpenHexa (uuoQdHIDMTB)
+        # Sync OU: PRS C- SIGL FOSA-Import SNIS SANRU (wMCnDAQfGZN) -> PRS Exhaustivity - OpenHexa (uuoQdHIDMTB)
         configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
         config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
         prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
@@ -404,7 +468,7 @@ def update_dataset_org_units(
         push_dataset_org_units(
             dhis2_client=connect_to_dhis2(connection_str=prs_conn, cache_dir=None),
             source_dataset_id="wMCnDAQfGZN",  # PRS C- SIGL FOSA-Import SNIS
-            target_dataset_id="uuoQdHIDMTB",  # PRS CMM - OpenHexa
+            target_dataset_id="uuoQdHIDMTB",  # PRS Exhaustivity - OpenHexa
             dry_run=config["SETTINGS"].get("DRY_RUN", True),
         )
 
@@ -483,7 +547,6 @@ def push_dataset_org_units(
 def push_data(
     pipeline_path: Path,
     run_task: bool = True,
-    wait: bool = True,
 ):
     """Pushes data elements to the target DHIS2 instance."""
     if not run_task:
@@ -543,7 +606,9 @@ def push_data(
             # Read extract
             extract_id, extract_file_path = split_on_pipe(next_period)
             extract_path = Path(extract_file_path)
-            extract_data = read_parquet_extract(parquet_file=extract_path)
+            # Read with polars, convert to pandas only when needed
+            extract_data_pl = pl.read_parquet(extract_path)
+            extract_data = extract_data_pl.to_pandas()  # Convert to pandas for apply_analytics_data_element_extract_config
             short_path = f"{extract_path.parent.name}/{extract_path.name}"
         except Exception as e:
             current_run.log_error(f"Failed to read extract from queue item: {next_period}. Error: {e}")
@@ -626,6 +691,9 @@ def apply_analytics_data_element_extract_config(df: pd.DataFrame, extract_config
         current_run.log_warning("No extract mappings provided, skipping data element mappings.")
         return df
 
+    # Convert to polars for processing
+    df_pl = pl.from_pandas(df)
+
     # Loop over the configured data element mappings to filter by COC/AOC if provided
     current_run.log_info(f"Applying data element mappings for extract: {extract_config.get('EXTRACT_UID')}.")
     chunks = []
@@ -635,19 +703,28 @@ def apply_analytics_data_element_extract_config(df: pd.DataFrame, extract_config
         coc_mappings = mapping.get("CATEGORY_OPTION_COMBO", {})
         aoc_mappings = mapping.get("ATTRIBUTE_OPTION_COMBO", {})
 
-        # Build a mask selection (filters by COC and AOC if provided)
-        df_uid = df[df["DX_UID"] == uid].copy()
+        # Build a mask selection (filters by COC and AOC if provided) using polars
+        df_uid = df_pl.filter(pl.col("DX_UID") == uid)
+        
         if coc_mappings:
             coc_mappings = {k: v for k, v in coc_mappings.items() if v is not None}  # Do not replace with None
             coc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in coc_mappings.items()}
-            df_uid = df_uid[df_uid["CATEGORY_OPTION_COMBO"].isin(coc_mappings_clean.keys())]
-            df_uid["CATEGORY_OPTION_COMBO"] = df_uid.loc[:, "CATEGORY_OPTION_COMBO"].replace(coc_mappings_clean)
+            coc_keys = list(coc_mappings_clean.keys())
+            df_uid = df_uid.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(coc_keys))
+            # Replace values using polars replace
+            df_uid = df_uid.with_columns(
+                pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
+            )
 
         if aoc_mappings:
             aoc_mappings = {k: v for k, v in aoc_mappings.items() if v is not None}  # Do not replace with None
             aoc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in aoc_mappings.items()}
-            df_uid = df_uid[df_uid["ATTRIBUTE_OPTION_COMBO"].isin(aoc_mappings_clean.keys())]
-            df_uid["ATTRIBUTE_OPTION_COMBO"] = df_uid.loc[:, "ATTRIBUTE_OPTION_COMBO"].replace(aoc_mappings_clean)
+            aoc_keys = list(aoc_mappings_clean.keys())
+            df_uid = df_uid.filter(pl.col("ATTRIBUTE_OPTION_COMBO").is_in(aoc_keys))
+            # Replace values using polars replace
+            df_uid = df_uid.with_columns(
+                pl.col("ATTRIBUTE_OPTION_COMBO").replace(aoc_mappings_clean)
+            )
 
         if uid_mapping:
             uid_mappings[uid] = uid_mapping
@@ -657,14 +734,22 @@ def apply_analytics_data_element_extract_config(df: pd.DataFrame, extract_config
     if len(chunks) == 0:
         current_run.log_warning("No data elements matched the provided mappings, returning empty dataframe.")
         logging.warning("No data elements matched the provided mappings, returning empty dataframe.")
+        # Return empty pandas DataFrame with same columns
         return pd.DataFrame(columns=df.columns)
 
-    df_filtered = pd.concat(chunks, ignore_index=True)
+    # Concatenate using polars
+    df_filtered_pl = pl.concat(chunks)
 
+    # Apply UID mappings using polars replace
     if uid_mappings:
         uid_mappings = {k: v for k, v in uid_mappings.items() if v is not None}  # Do not replace with None
         uid_mappings_clean = {str(k).strip(): str(v).strip() for k, v in uid_mappings.items()}
-        df_filtered["DX_UID"] = df_filtered.loc[:, "DX_UID"].replace(uid_mappings_clean)
+        df_filtered_pl = df_filtered_pl.with_columns(
+            pl.col("DX_UID").replace(uid_mappings_clean)
+        )
+
+    # Convert back to pandas for compatibility
+    df_filtered = df_filtered_pl.to_pandas()
 
     # Fill missing AOC (PRS default)
     df_filtered["ATTRIBUTE_OPTION_COMBO"] = df_filtered.loc[:, "ATTRIBUTE_OPTION_COMBO"].replace({None: "HllvX50cXC0"})

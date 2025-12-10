@@ -1,3 +1,44 @@
+# Fichiers de test et scripts locaux (non nécessaires pour OpenHexa)
+test_*.py
+run_local_*.py
+inspect_data.py
+
+# Workspace local (données générées localement)
 workspace/
 workspace.yaml
+
+# Fichiers de configuration de test
+config_files/extract_config_test.json
+
+# Fichiers temporaires et données générées
+*.parquet
+*.db
+tmp*.parquet
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs
+*.log
+logs/
+
+# Fichiers temporaires système
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
 .vscode/
+.idea/
+*.code-workspace
+
+# Environnements virtuels
+.venv/
+venv/
+env/
