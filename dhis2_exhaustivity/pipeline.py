@@ -305,8 +305,8 @@ def compute_exhaustivity_and_queue(
             
             if not period_file.exists():
                 current_run.log_warning(f"Parquet file not found for period {period} in {extracts_folder}")
-                # If no data at all for this period, create entries with exhaustivity = 0 for all expected DX_UIDs
-                # Load extract config to get expected data elements
+                # If no data at all for this period, create entries with exhaustivity = 0 for all (PERIOD, DX_UID, ORG_UNIT) combinations
+                # Load extract config to get expected data elements and org units
                 from utils import load_configuration
                 extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
                 
@@ -319,27 +319,53 @@ def compute_exhaustivity_and_queue(
                 
                 if extract_config_item and extract_config_item.get("UIDS"):
                     expected_dx_uids = extract_config_item.get("UIDS", [])
-                    # Create entries with exhaustivity = 0 for all DX_UIDs (no ORG_UNIT in this case)
-                    missing_data_df = pl.DataFrame({
-                        "PERIOD": [period] * len(expected_dx_uids),
-                        "DX_UID": expected_dx_uids,
-                        "ORG_UNIT": [None] * len(expected_dx_uids),  # No org unit when no data
-                        "EXHAUSTIVITY_VALUE": [0] * len(expected_dx_uids),
-                    })
                     
-                    # Format for DHIS2 import
-                    df_final = format_for_exhaustivity_import(missing_data_df)
-                    
+                    # Get expected org units from other periods' data (same logic as when data exists)
+                    expected_org_units = None
                     try:
-                        save_to_parquet(
-                            data=df_final,
-                            filename=output_dir / f"exhaustivity_{period}.parquet",
-                        )
-                        push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
-                        current_run.log_info(f"Created exhaustivity entries with value 0 for {len(expected_dx_uids)} DX_UIDs (no data for period {period})")
+                        # Read all parquet files to get all org units
+                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                        if all_period_files:
+                            all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                            expected_org_units = all_data["ORG_UNIT"].unique().to_list()
                     except Exception as e:
-                        logging.error(f"Exhaustivity saving error: {e!s}")
-                        current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
+                        current_run.log_warning(f"Could not determine expected org units: {e}")
+                    
+                    if expected_org_units:
+                        # Create a complete grid of (PERIOD, DX_UID, ORG_UNIT) with exhaustivity = 0
+                        all_combinations = []
+                        for dx_uid in expected_dx_uids:
+                            for org_unit in expected_org_units:
+                                all_combinations.append({
+                                    "PERIOD": period,
+                                    "DX_UID": dx_uid,
+                                    "ORG_UNIT": org_unit,
+                                    "EXHAUSTIVITY_VALUE": 0,
+                                })
+                        
+                        missing_data_df = pl.DataFrame(all_combinations)
+                        
+                        # Format for DHIS2 import
+                        df_final = format_for_exhaustivity_import(missing_data_df)
+                        
+                        try:
+                            save_to_parquet(
+                                data=df_final,
+                                filename=output_dir / f"exhaustivity_{period}.parquet",
+                            )
+                            push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
+                            current_run.log_info(
+                                f"Created exhaustivity entries with value 0 for {len(expected_dx_uids)} DX_UIDs "
+                                f"and {len(expected_org_units)} ORG_UNITs ({len(all_combinations)} combinations, no data for period {period})"
+                            )
+                        except Exception as e:
+                            logging.error(f"Exhaustivity saving error: {e!s}")
+                            current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
+                    else:
+                        current_run.log_warning(
+                            f"No org units found from other periods for extract {extract_id}, "
+                            f"cannot create exhaustivity entries for period {period}"
+                        )
                 else:
                     current_run.log_warning(f"No expected DX_UIDs found in config for extract {extract_id}, skipping period {period}")
                 continue
