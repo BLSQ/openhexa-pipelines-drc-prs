@@ -20,7 +20,6 @@ from utils import (
     configure_logging,
     connect_to_dhis2,
     load_configuration,
-    read_parquet_extract,
     save_to_parquet,
 )
 
@@ -104,23 +103,29 @@ def extract_data(
     push_queue = Queue(db_path)
 
     try:
-        exhaustivity_periods_window = extract_config["SETTINGS"].get("EXHAUSTIVITY_PERIODS_WINDOW", 3)  # default 3 months window for exhaustivity periods
-        if not extract_config["SETTINGS"].get("STARTDATE"):
-            start = (datetime.now() - relativedelta(months=exhaustivity_periods_window)).strftime("%Y%m")
-        else:
-            start = extract_config["SETTINGS"].get("STARTDATE")
-        if not extract_config["SETTINGS"].get("ENDDATE"):
-            end = (datetime.now() - relativedelta(months=1)).strftime("%Y%m")  # go back 1 month.
-        else:
-            end = extract_config["SETTINGS"].get("ENDDATE")
+        # Get extraction window (number of months to extract, including current month)
+        extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
+        
+        # ENDDATE: Always use current month (datetime.now()) - overrides config value
+        # Config values are kept for reference/documentation but are overridden by dynamic logic
+        end = datetime.now().strftime("%Y%m")
+        config_enddate = extract_config["SETTINGS"].get("ENDDATE")
+        if config_enddate:
+            current_run.log_info(f"ENDDATE in config ({config_enddate}) overridden by dynamic date: {end}")
+        
+        # STARTDATE: Always calculated from ENDDATE and EXTRACTION_MONTHS_WINDOW - overrides config value
+        # Example: if EXTRACTION_MONTHS_WINDOW=3 and ENDDATE=202412, STARTDATE=202410 (3 months: Oct, Nov, Dec)
+        end_date = datetime.strptime(end, "%Y%m")
+        start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
+        config_startdate = extract_config["SETTINGS"].get("STARTDATE")
+        if config_startdate:
+            current_run.log_info(f"STARTDATE in config ({config_startdate}) overridden by dynamic calculation: {start}")
+        
     except Exception as e:
         raise Exception(f"Error in start/end date configuration: {e}") from e
 
-    # Adjust the start date to consider the extraction window necessary for exhaustivity computation
-    extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
-    start_extraction = (datetime.strptime(start, "%Y%m") - relativedelta(months=extraction_window)).strftime(
-        "%Y%m"
-    )  # consider extraction window months in the past to ensure all required data is available
+    # For extraction, use STARTDATE to ENDDATE (same range for exhaustivity computation)
+    start_extraction = start
 
     # limits
     dhis2_client.data_value_sets.MAX_DATA_ELEMENTS = 100
@@ -137,7 +142,8 @@ def extract_data(
         dhis2_client=dhis2_client, download_mode=download_settings, return_existing_file=False
     )
     current_run.log_info(
-        f"Download MODE: {extract_config['SETTINGS']['MODE']} from: {start_extraction} ({extraction_window} months extraction window) to {end}"
+        f"Download MODE: {extract_config['SETTINGS']['MODE']} - Extraction and Exhaustivity: {start_extraction} to {end} "
+        f"({extraction_window} months including current month)"
     )
 
     handle_data_element_extracts(
@@ -148,14 +154,15 @@ def extract_data(
         extract_config=extract_config,
     )
 
-    # Collect the downloaded files and compute exhaustivity.
-    target_extract = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])[0]
-    compute_exhaustivity_and_queue(
-        pipeline_path=pipeline_path,
-        extract_id=target_extract.get("EXTRACT_UID"),
-        exhaustivity_periods=get_periods(start, end),
-        push_queue=push_queue,
-    )
+    # Collect the downloaded files and compute exhaustivity for all extracts.
+    # Use the same date range as extraction (start to end)
+    for target_extract in extract_config["DATA_ELEMENTS"].get("EXTRACTS", []):
+        compute_exhaustivity_and_queue(
+            pipeline_path=pipeline_path,
+            extract_id=target_extract.get("EXTRACT_UID"),
+            exhaustivity_periods=get_periods(start, end),
+            push_queue=push_queue,
+        )
 
 
 def handle_data_element_extracts(
@@ -195,16 +202,14 @@ def handle_data_element_extracts(
             current_run.log_warning(f"No data elements defined for extract: {extract_id}, extract skipped.")
             continue
 
-        if not dataset_uid:
-            current_run.log_warning(f"No dataset id defined for extract: {extract_id}, extract skipped.")
-            continue
-
-        # get org units from the dataset directly
+        # get org units from the dataset directly if dataset_uid is provided, otherwise use org_units_level
         if dataset_uid is not None:
             source_dataset = source_datasets.filter(pl.col("id").is_in([dataset_uid]))
             org_units = source_dataset["organisation_units"].explode().to_list()
+            dataset_name = source_dataset["name"][0] if len(source_dataset) > 0 else "Unknown"
         else:
             org_units = full_pyramid.filter(pl.col("level") == org_units_level)["id"].to_list()
+            dataset_name = f"Level {org_units_level}"
         
         # Limit org units for testing if MAX_ORG_UNITS_FOR_TEST is set in config
         if extract_config and extract_config.get("SETTINGS", {}).get("MAX_ORG_UNITS_FOR_TEST"):
@@ -219,7 +224,7 @@ def handle_data_element_extracts(
         current_run.log_info(
             f"Starting data elements extract ID: '{extract_id}' ({idx + 1}) "
             f"with {len(data_element_uids)} data elements across {len(org_units)} org units "
-            f"(dataset: {source_dataset['name'][0]})."
+            f"(dataset: {dataset_name})."
         )
 
         # run data elements extraction per period
@@ -240,43 +245,6 @@ def handle_data_element_extracts(
                 break  # skip to next extract
 
         current_run.log_info(f"Extract {extract_id} finished.")
-
-
-def check_validate_and_save_extract(data_elements: list[str], repo_path: Path, period: str, output: Path) -> bool:
-    """Validate and save extracted data elements for a given period from an existing repository.
-
-    Parameters
-    ----------
-    data_elements : list[str]
-        List of data element UIDs to filter.
-    repo_path : Path
-        Path to the repository containing the data files.
-    period : str
-        The period string (e.g., '202301') to locate the data file.
-    output : Path
-        Output directory where the filtered data will be saved.
-
-    Returns
-    -------
-    bool
-        True if data was found and saved, False otherwise.
-    """
-    if not (repo_path / f"data_{period}.parquet").is_file():
-        return False
-    # Read with polars
-    df_pl = pl.read_parquet(repo_path / f"data_{period}.parquet")
-    output.mkdir(parents=True, exist_ok=True)
-    df_selection = df_pl.filter(pl.col("DX_UID").is_in(data_elements))
-    if len(df_selection) == 0:
-        current_run.log_info(f"No data found for period {period} in the selected data elements. Warning.")
-        return False
-    num_found = df_selection["DX_UID"].n_unique()
-    df_selection.write_parquet(output / f"data_{period}.parquet")
-    current_run.log_info(
-        f"Extract for period {period} created from existing data. "
-        f"Data elements found: {num_found}/{len(data_elements)}."
-    )
-    return True
 
 
 def get_periods(start: str, end: str) -> list[str]:
@@ -337,6 +305,43 @@ def compute_exhaustivity_and_queue(
             
             if not period_file.exists():
                 current_run.log_warning(f"Parquet file not found for period {period} in {extracts_folder}")
+                # If no data at all for this period, create entries with exhaustivity = 0 for all expected DX_UIDs
+                # Load extract config to get expected data elements
+                from utils import load_configuration
+                extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+                
+                # Find the extract configuration
+                extract_config_item = None
+                for extract_item in extract_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
+                    if extract_item.get("EXTRACT_UID") == extract_id:
+                        extract_config_item = extract_item
+                        break
+                
+                if extract_config_item and extract_config_item.get("UIDS"):
+                    expected_dx_uids = extract_config_item.get("UIDS", [])
+                    # Create entries with exhaustivity = 0 for all DX_UIDs (no ORG_UNIT in this case)
+                    missing_data_df = pl.DataFrame({
+                        "PERIOD": [period] * len(expected_dx_uids),
+                        "DX_UID": expected_dx_uids,
+                        "ORG_UNIT": [None] * len(expected_dx_uids),  # No org unit when no data
+                        "EXHAUSTIVITY_VALUE": [0] * len(expected_dx_uids),
+                    })
+                    
+                    # Format for DHIS2 import
+                    df_final = format_for_exhaustivity_import(missing_data_df)
+                    
+                    try:
+                        save_to_parquet(
+                            data=df_final,
+                            filename=output_dir / f"exhaustivity_{period}.parquet",
+                        )
+                        push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
+                        current_run.log_info(f"Created exhaustivity entries with value 0 for {len(expected_dx_uids)} DX_UIDs (no data for period {period})")
+                    except Exception as e:
+                        logging.error(f"Exhaustivity saving error: {e!s}")
+                        current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
+                else:
+                    current_run.log_warning(f"No expected DX_UIDs found in config for extract {extract_id}, skipping period {period}")
                 continue
 
             # Get expected DX_UIDs and ORG_UNITs from extract configuration
@@ -631,7 +636,6 @@ def push_data(
 
             # Apply mapping and push data
             df_mapped = mapper_func(df=extract_data, extract_config=extract_config)
-            # df_mapped[[""]].drop_duplicates().head()
             pusher.push_data(df_data=df_mapped)
 
             # Success → dequeue

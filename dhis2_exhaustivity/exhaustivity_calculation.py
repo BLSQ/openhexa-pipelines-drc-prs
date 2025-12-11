@@ -213,20 +213,21 @@ def compute_and_log_exhaustivity(
             current_run.log_error("No EXTRACT_UID found in configuration for exhaustivity calculation.")
             return pl.DataFrame({"PERIOD": [], "DX_UID": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
         
-        # Get periods from configuration
+        # Get periods from configuration (using same logic as extraction)
         from datetime import datetime
         from dateutil.relativedelta import relativedelta
         from openhexa.toolbox.dhis2.periods import period_from_string
         
-        exhaustivity_periods_window = extract_config["SETTINGS"].get("EXHAUSTIVITY_PERIODS_WINDOW", 3)
-        if not extract_config["SETTINGS"].get("STARTDATE"):
-            start = (datetime.now() - relativedelta(months=exhaustivity_periods_window)).strftime("%Y%m")
-        else:
-            start = extract_config["SETTINGS"].get("STARTDATE")
+        extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
         if not extract_config["SETTINGS"].get("ENDDATE"):
-            end = (datetime.now() - relativedelta(months=1)).strftime("%Y%m")
+            end = datetime.now().strftime("%Y%m")
         else:
             end = extract_config["SETTINGS"].get("ENDDATE")
+        if not extract_config["SETTINGS"].get("STARTDATE"):
+            end_date = datetime.strptime(end, "%Y%m")
+            start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
+        else:
+            start = extract_config["SETTINGS"].get("STARTDATE")
         
         # Generate periods list using the same logic as get_periods
         try:
