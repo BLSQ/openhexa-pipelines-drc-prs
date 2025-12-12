@@ -91,7 +91,7 @@ def extract_data(
     configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
 
     # load configuration
-    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config_test.json")
 
     # connect to source DHIS2 instance (No cache for data extraction)
     dhis2_client = connect_to_dhis2(
@@ -227,6 +227,16 @@ def handle_data_element_extracts(
             f"(dataset: {dataset_name})."
         )
 
+        # Create folder name based on org units level or extract type
+        if org_units_level is not None:
+            folder_name = f"Extract lvl {org_units_level}"
+        elif "Fosa" in extract_id:
+            folder_name = "Extract lvl 5"
+        elif "BCZ" in extract_id:
+            folder_name = "Extract lvl 3"
+        else:
+            folder_name = f"Extract {extract_id}"
+
         # run data elements extraction per period
         for period in extract_periods:
             try:
@@ -234,7 +244,7 @@ def handle_data_element_extracts(
                     data_elements=data_element_uids,
                     org_units=org_units,
                     period=period,
-                    output_dir=pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}",
+                    output_dir=pipeline_path / "data" / "extracts" / folder_name,
                 )
 
             except Exception as e:
@@ -293,9 +303,46 @@ def compute_exhaustivity_and_queue(
     push_queue : Queue
         Queue to enqueue the exhaustivity result file for pushing.
     """
-    extracts_folder = pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}"
-    output_dir = pipeline_path / "data" / "exhaustivity"
+    # Load config to get org units level for folder naming
+    from utils import load_configuration
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config_test.json")
+    
+    # Find the extract configuration to determine folder name
+    extract_config_item = None
+    for extract_item in extract_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
+        if extract_item.get("EXTRACT_UID") == extract_id:
+            extract_config_item = extract_item
+            break
+    
+    # Create folder name based on org units level or extract type
+    if extract_config_item:
+        org_units_level = extract_config_item.get("ORG_UNITS_LEVEL")
+        if org_units_level is not None:
+            folder_name = f"Extract lvl {org_units_level}"
+        elif "Fosa" in extract_id:
+            folder_name = "Extract lvl 5"
+        elif "BCZ" in extract_id:
+            folder_name = "Extract lvl 3"
+        else:
+            folder_name = f"Extract {extract_id}"
+    else:
+        # Fallback to extract_id if config not found
+        if "Fosa" in extract_id:
+            folder_name = "Extract lvl 5"
+        elif "BCZ" in extract_id:
+            folder_name = "Extract lvl 3"
+        else:
+            folder_name = f"Extract {extract_id}"
+    
+    extracts_folder = pipeline_path / "data" / "extracts" / folder_name
+    output_dir = pipeline_path / "data" / "processed" / folder_name
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Clean summary file at the start for this extract
+    summary_file = output_dir / "summary.txt"
+    if summary_file.exists():
+        summary_file.unlink()
+    
     try:
         for period in exhaustivity_periods:
             current_run.log_info(f"Computing exhaustivity for period: {period}.")
@@ -308,7 +355,7 @@ def compute_exhaustivity_and_queue(
                 # If no data at all for this period, create entries with exhaustivity = 0 for all (PERIOD, DX_UID, ORG_UNIT) combinations
                 # Load extract config to get expected data elements and org units
                 from utils import load_configuration
-                extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+                extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config_test.json")
                 
                 # Find the extract configuration
                 extract_config_item = None
@@ -373,7 +420,7 @@ def compute_exhaustivity_and_queue(
             # Get expected DX_UIDs and ORG_UNITs from extract configuration
             # Load extract config to get expected data elements
             from utils import load_configuration
-            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config_test.json")
             
             # Find the extract configuration
             extract_config_item = None
@@ -406,6 +453,8 @@ def compute_exhaustivity_and_queue(
                 periods=[period],
                 expected_dx_uids=expected_dx_uids,
                 expected_org_units=expected_org_units,
+                extract_config_item=extract_config_item,
+                extracts_folder=extracts_folder,
             )
 
             # Filter for the current period (in case multiple periods were processed)
