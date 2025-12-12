@@ -44,8 +44,8 @@ from utils import (
     code="run_push_data",
     name="Push data",
     type=bool,
-    default=True,
-    help="Push data to target DHIS2.",
+    default=False,
+    help="Push data to target DHIS2. Set to True only for production runs.",
 )
 def dhis2_exhaustivity(run_extract_data: bool, run_push_data: bool):
     """Extract data elements from the PRS DHIS2 instance.
@@ -91,7 +91,7 @@ def extract_data(
     configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
 
     # load configuration
-    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config_test.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
 
     # connect to source DHIS2 instance (No cache for data extraction)
     dhis2_client = connect_to_dhis2(
@@ -305,7 +305,7 @@ def compute_exhaustivity_and_queue(
     """
     # Load config to get org units level for folder naming
     from utils import load_configuration
-    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config_test.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     
     # Find the extract configuration to determine folder name
     extract_config_item = None
@@ -355,7 +355,7 @@ def compute_exhaustivity_and_queue(
                 # If no data at all for this period, create entries with exhaustivity = 0 for all (PERIOD, DX_UID, ORG_UNIT) combinations
                 # Load extract config to get expected data elements and org units
                 from utils import load_configuration
-                extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config_test.json")
+                extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
                 
                 # Find the extract configuration
                 extract_config_item = None
@@ -420,7 +420,7 @@ def compute_exhaustivity_and_queue(
             # Get expected DX_UIDs and ORG_UNITs from extract configuration
             # Load extract config to get expected data elements
             from utils import load_configuration
-            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config_test.json")
+            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
             
             # Find the extract configuration
             extract_config_item = None
