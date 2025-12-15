@@ -3,6 +3,7 @@ from pathlib import Path
 
 import polars as pl
 from openhexa.sdk import current_run
+from utils import load_configuration
 
 def compute_exhaustivity(
     pipeline_path: Path,
@@ -15,15 +16,15 @@ def compute_exhaustivity(
 ) -> pl.DataFrame:
     """Computes exhaustivity from extracted data based on VALUE null checks.
     
-    For each combination of (PERIOD, DX_UID, ORG_UNIT), checks if all CATEGORY_OPTION_COMBO
+    For each combination of (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT), checks if all DX_UIDs
     have a non-null VALUE. If all values are filled, exhaustivity = 1, otherwise 0.
     
-    If a DX_UID is missing for a (PERIOD, ORG_UNIT) combination (form not submitted),
+    If a DX_UID is missing for a (PERIOD, COC, ORG_UNIT) combination (form not submitted),
     exhaustivity = 0 (form not sent at all).
     
-    Each DX_UID represents a form, and we check if the form was completely filled
-    (all category option combos have values) for the period and org unit it was submitted.
-    If any VALUE is null for a (PERIOD, DX_UID, ORG_UNIT) combination, exhaustivity = 0.
+    Each CATEGORY_OPTION_COMBO represents a category, and we check if all DX_UIDs (medications)
+    have values for this category in the period and org unit. If any VALUE is null or missing
+    for a (PERIOD, COC, ORG_UNIT) combination, exhaustivity = 0.
     
     Parameters
     ----------
@@ -43,9 +44,9 @@ def compute_exhaustivity(
     Returns
     -------
     pl.DataFrame
-        DataFrame with columns: PERIOD, DX_UID, ORG_UNIT, EXHAUSTIVITY_VALUE
-        EXHAUSTIVITY_VALUE is 1 if all CATEGORY_OPTION_COMBO have non-null VALUE, 0 otherwise.
-        Missing (PERIOD, DX_UID, ORG_UNIT) combinations are included with value 0.
+        DataFrame with columns: PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
+        EXHAUSTIVITY_VALUE is 1 if all DX_UIDs have non-null VALUE for this COC, 0 otherwise.
+        Missing (PERIOD, COC, ORG_UNIT) combinations are included with value 0.
     """
     # Use provided extracts_folder or determine it based on extract_id
     if extracts_folder is None:
@@ -137,7 +138,7 @@ def compute_exhaustivity(
         # Check if dataframe is empty
         if len(df) == 0:
             current_run.log_warning("DataFrame is empty after filtering, returning empty exhaustivity result")
-            return pl.DataFrame({"PERIOD": [], "DX_UID": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
+            return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
         
         # Check required columns exist
         required_columns = ["PERIOD", "DX_UID", "ORG_UNIT", "VALUE", "CATEGORY_OPTION_COMBO"]
@@ -172,8 +173,9 @@ def compute_exhaustivity(
             )
         current_run.log_info("=" * 80)
         
-        # Determine expected COCs for each DX_UID (all COCs that appear for that DX_UID across ALL available data)
-        # Read ALL parquet files in the extracts folder to get complete COC list, not just the current periods
+        # Determine expected DX_UIDs for each COC (all DX_UIDs that should appear with that COC)
+        # Prefer using push_config mappings (source of truth), and fall back to data if not available.
+        # Read ALL parquet files in the extracts folder to get complete DX_UID / COC list, not just the current periods
         all_available_files = list(extracts_folder.glob("data_*.parquet"))
         if all_available_files:
             df_all_periods = pl.concat([pl.read_parquet(f) for f in all_available_files])
@@ -185,77 +187,121 @@ def compute_exhaustivity(
         else:
             df_all_periods = df
         
-        expected_cocs_by_dx = {}
-        for dx_uid in df_all_periods["DX_UID"].unique().to_list():
-            dx_data = df_all_periods.filter(pl.col("DX_UID") == dx_uid)
-            expected_cocs_by_dx[dx_uid] = sorted(dx_data["CATEGORY_OPTION_COMBO"].unique().to_list())
+        # 1) Try to build expected DX_UIDs per COC from push_config mappings
+        expected_dx_uids_by_coc: dict[str, list[str]] = {}
+        try:
+            push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+            push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+            push_mappings: dict[str, dict] = {}
+            for push_extract in push_extracts:
+                push_mappings.update(push_extract.get("MAPPINGS", {}))
+
+            # Limit to DX_UIDs that are relevant for this extract (from extract_config if available,
+            # otherwise use DX_UIDs that appear in the data across all periods)
+            if extract_config_item and extract_config_item.get("UIDS"):
+                relevant_dx_uids = set(extract_config_item.get("UIDS", []))
+            else:
+                relevant_dx_uids = set(df_all_periods["DX_UID"].unique().to_list())
+
+            expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
+            for dx_uid, mapping in push_mappings.items():
+                if dx_uid not in relevant_dx_uids:
+                    continue
+                coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
+                for _src_coc, target_coc in coc_map.items():
+                    if target_coc is None:
+                        continue
+                    coc_id = str(target_coc).strip()
+                    if not coc_id:
+                        continue
+                    expected_dx_uids_by_coc_sets.setdefault(coc_id, set()).add(dx_uid)
+
+            expected_dx_uids_by_coc = {
+                coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
+            }
+
+            if expected_dx_uids_by_coc:
+                current_run.log_info(
+                    f"Expected DX_UIDs per COC loaded from push_config (global): {expected_dx_uids_by_coc}"
+                )
+        except Exception as e:
+            current_run.log_warning(f"Could not load expected DX_UIDs per COC from push_config: {e!s}")
+            expected_dx_uids_by_coc = {}
+
+        # 2) Fallback: if push_config did not provide anything, derive expected DX_UIDs per COC from data
+        if not expected_dx_uids_by_coc:
+            expected_dx_uids_by_coc = {}
+            for coc in df_all_periods["CATEGORY_OPTION_COMBO"].unique().to_list():
+                coc_data = df_all_periods.filter(pl.col("CATEGORY_OPTION_COMBO") == coc)
+                expected_dx_uids_by_coc[coc] = sorted(coc_data["DX_UID"].unique().to_list())
+            current_run.log_info(
+                f"Expected DX_UIDs per COC derived from data (no push_config mapping): {expected_dx_uids_by_coc}"
+            )
         
-        current_run.log_info(f"Expected COCs per DX_UID (global, from all available data): {expected_cocs_by_dx}")
-        
-        # Group by PERIOD, DX_UID, and ORG_UNIT, check if all expected COCs are present and non-null
-        # If any expected COC is missing or null for a (PERIOD, DX_UID, ORG_UNIT) combination, exhaustivity = 0
+        # Group by PERIOD, CATEGORY_OPTION_COMBO, and ORG_UNIT, check if all expected DX_UIDs are present and non-null
+        # If any expected DX_UID is missing or null for a (PERIOD, COC, ORG_UNIT) combination, exhaustivity = 0
         # Otherwise exhaustivity = 1
         df_grouped_for_log = (
-            df.group_by(["PERIOD", "DX_UID", "ORG_UNIT"])
+            df.group_by(["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"])
             .agg([
-                pl.col("CATEGORY_OPTION_COMBO").alias("COCs"),
+                pl.col("DX_UID").alias("DX_UIDs"),
                 pl.col("VALUE").alias("VALUES"),
                 pl.col("VALUE_IS_NULL").alias("NULL_FLAGS"),
             ])
         )
         
-        # Check exhaustivity: all expected COCs must be present AND non-null
+        # Check exhaustivity: all expected DX_UIDs must be present AND non-null
         exhaustivity_rows = []
         for row in df_grouped_for_log.iter_rows(named=True):
             period = row["PERIOD"]
-            dx_uid = row["DX_UID"]
+            coc = row["CATEGORY_OPTION_COMBO"]
             org_unit = row["ORG_UNIT"]
             
-            cocs_present = set(row["COCs"] if isinstance(row["COCs"], list) else [row["COCs"]])
+            dx_uids_present = set(row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]])
             values_list = row["VALUES"] if isinstance(row["VALUES"], list) else [row["VALUES"]]
             null_flags_list = row["NULL_FLAGS"] if isinstance(row["NULL_FLAGS"], list) else [row["NULL_FLAGS"]]
             
-            # Get expected COCs for this DX_UID (global, across all periods)
-            expected_cocs = set(expected_cocs_by_dx.get(dx_uid, []))
+            # Get expected DX_UIDs for this COC (global, across all periods)
+            expected_dx_uids = set(expected_dx_uids_by_coc.get(coc, []))
             
-            # Check if all expected COCs are present
-            missing_cocs = expected_cocs - cocs_present
+            # Check if all expected DX_UIDs are present
+            missing_dx_uids = expected_dx_uids - dx_uids_present
             
-            # Check if any present COC has null value
+            # Check if any present DX_UID has null value
             has_null_value = any(null_flags_list) if null_flags_list else False
             
-            # Exhaustivity = 0 if any expected COC is missing OR any value is null
-            exhaustivity_value = 0 if (missing_cocs or has_null_value) else 1
+            # Exhaustivity = 0 if any expected DX_UID is missing OR any value is null
+            exhaustivity_value = 0 if (missing_dx_uids or has_null_value) else 1
             
             exhaustivity_rows.append({
                 "PERIOD": period,
-                "DX_UID": dx_uid,
+                "CATEGORY_OPTION_COMBO": coc,
                 "ORG_UNIT": org_unit,
                 "EXHAUSTIVITY_VALUE": exhaustivity_value,
-                "MISSING_COCs": list(missing_cocs),
+                "MISSING_DX_UIDs": list(missing_dx_uids),
                 "HAS_NULL_VALUE": has_null_value
             })
             
             # Log aggregation details
             current_run.log_info(
-                f"PERIOD={period} | DX_UID={dx_uid} | ORG_UNIT={org_unit}"
+                f"PERIOD={period} | COC={coc} | ORG_UNIT={org_unit}"
             )
-            for i, (coc, value, is_null) in enumerate(zip(
-                row["COCs"] if isinstance(row["COCs"], list) else [row["COCs"]],
+            for i, (dx_uid, value, is_null) in enumerate(zip(
+                row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]],
                 values_list,
                 null_flags_list
             )):
                 value_str = str(value) if value is not None else "NULL"
                 null_str = "NULL" if is_null else "OK"
-                current_run.log_info(f"  COC[{i}]={coc} | VALUE={value_str} | IS_NULL={null_str}")
-            if missing_cocs:
-                current_run.log_info(f"  -> MISSING_COCs={list(missing_cocs)}")
+                current_run.log_info(f"  DX_UID[{i}]={dx_uid} | VALUE={value_str} | IS_NULL={null_str}")
+            if missing_dx_uids:
+                current_run.log_info(f"  -> MISSING_DX_UIDs={list(missing_dx_uids)}")
             current_run.log_info(f"  -> HAS_NULL_VALUE={has_null_value} | SCORE={exhaustivity_value}")
             current_run.log_info("-" * 80)
         
         # Create the final exhaustivity dataframe
         exhaustivity_df = pl.DataFrame(exhaustivity_rows).select([
-            "PERIOD", "DX_UID", "ORG_UNIT", "EXHAUSTIVITY_VALUE"
+            "PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"
         ])
         
         # Log final scores
@@ -264,28 +310,29 @@ def compute_exhaustivity(
         current_run.log_info("=" * 80)
         for row in exhaustivity_df.iter_rows(named=True):
             current_run.log_info(
-                f"PERIOD={row['PERIOD']} | DX_UID={row['DX_UID']} | ORG_UNIT={row['ORG_UNIT']} | "
+                f"PERIOD={row['PERIOD']} | COC={row['CATEGORY_OPTION_COMBO']} | ORG_UNIT={row['ORG_UNIT']} | "
                 f"EXHAUSTIVITY_VALUE={row['EXHAUSTIVITY_VALUE']}"
             )
         current_run.log_info("=" * 80)
         
         # If expected DX_UIDs and ORG_UNITs are provided, create a complete grid
         # and mark missing combinations as exhaustivity = 0
+        # For each COC, we need all expected DX_UIDs to have values
         if expected_dx_uids and expected_org_units:
-            # Get unique periods, DX_UIDs, and ORG_UNITs from the data
+            # Get unique periods and COCs from the data
             periods_in_data = exhaustivity_df["PERIOD"].unique().to_list()
-            dx_uids_in_data = exhaustivity_df["DX_UID"].unique().to_list()
+            cocs_in_data = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list()
             org_units_in_data = exhaustivity_df["ORG_UNIT"].unique().to_list()
             
-            # Use periods from data, but expected DX_UIDs and ORG_UNITs from config
+            # Use periods and COCs from data, but expected DX_UIDs and ORG_UNITs from config
             # Create a complete grid of all expected combinations
             all_combinations = []
             for period in periods_in_data:
-                for dx_uid in expected_dx_uids:
+                for coc in cocs_in_data:
                     for org_unit in expected_org_units:
                         all_combinations.append({
                             "PERIOD": period,
-                            "DX_UID": dx_uid,
+                            "CATEGORY_OPTION_COMBO": coc,
                             "ORG_UNIT": org_unit
                         })
             
@@ -296,7 +343,7 @@ def compute_exhaustivity(
             # Missing combinations will have null EXHAUSTIVITY_VALUE
             complete_exhaustivity = expected_df.join(
                 exhaustivity_df,
-                on=["PERIOD", "DX_UID", "ORG_UNIT"],
+                on=["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"],
                 how="left"
             ).with_columns([
                 # Fill null values with 0 (form not submitted)
@@ -306,14 +353,14 @@ def compute_exhaustivity(
             missing_count = len(complete_exhaustivity) - len(exhaustivity_df)
             if missing_count > 0:
                 current_run.log_info(
-                    f"Found {missing_count} missing (PERIOD, DX_UID, ORG_UNIT) combinations. "
+                    f"Found {missing_count} missing (PERIOD, COC, ORG_UNIT) combinations. "
                     f"Marked as exhaustivity = 0 (form not submitted)."
                 )
             
             exhaustivity_df = complete_exhaustivity
         
         current_run.log_info(
-            f"Exhaustivity computed for {len(exhaustivity_df)} combinations (PERIOD, DX_UID, ORG_UNIT). "
+            f"Exhaustivity computed for {len(exhaustivity_df)} combinations (PERIOD, COC, ORG_UNIT). "
             f"Values: {exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()} complete, "
             f"{len(exhaustivity_df) - exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()} incomplete."
         )
@@ -337,7 +384,7 @@ def compute_exhaustivity(
             f.write(f"Complete (score=1): {exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()}\n")
             f.write(f"Incomplete (score=0): {len(exhaustivity_df) - exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()}\n\n")
             
-            # Create tabular view with raw data: rows = dx_uid, columns = category_option_combo
+            # Create tabular view with raw data: rows = category_option_combo, columns = dx_uid
             # One table per (PERIOD, ORG_UNIT) combination
             periods = sorted(df["PERIOD"].unique().to_list())
             org_units = sorted(df["ORG_UNIT"].unique().to_list())
@@ -349,20 +396,59 @@ def compute_exhaustivity(
                 dx_uids = sorted(df["DX_UID"].unique().to_list())
                 current_run.log_info(f"Using DX_UIDs from data only: {dx_uids}")
             
-            # Get all COCs that appear for each DX_UID (expected COCs, global across all available data)
-            # Use the same df_all_periods that was used for expected_cocs_by_dx
-            # Also get all COCs across all DX_UIDs as fallback for DX_UIDs without data
-            all_cocs_all_dx = sorted(df_all_periods["CATEGORY_OPTION_COMBO"].unique().to_list()) if len(df_all_periods) > 0 else []
-            all_cocs_by_dx = {}
-            for dx_uid in dx_uids:
-                dx_data = df_all_periods.filter(pl.col("DX_UID") == dx_uid)
-                cocs_for_dx = sorted(dx_data["CATEGORY_OPTION_COMBO"].unique().to_list())
-                # If DX_UID has no data, use all COCs from all DX_UIDs as fallback
-                if len(cocs_for_dx) == 0:
-                    all_cocs_by_dx[dx_uid] = all_cocs_all_dx
-                    current_run.log_info(f"DX_UID {dx_uid} has no data, using all COCs from other DX_UIDs: {all_cocs_all_dx}")
+            # Get all COCs that appear in the data (global across all available data)
+            all_cocs = (
+                sorted(df_all_periods["CATEGORY_OPTION_COMBO"].unique().to_list())
+                if len(df_all_periods) > 0
+                else []
+            )
+
+            # Get expected DX_UIDs for each COC.
+            # Prefer using push_config mappings (same logic as above), and fall back to data if not available.
+            expected_dx_uids_by_coc: dict[str, list[str]] = {}
+            try:
+                push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+                push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+                push_mappings: dict[str, dict] = {}
+                for push_extract in push_extracts:
+                    push_mappings.update(push_extract.get("MAPPINGS", {}))
+
+                if extract_config_item and extract_config_item.get("UIDS"):
+                    relevant_dx_uids = set(extract_config_item.get("UIDS", []))
                 else:
-                    all_cocs_by_dx[dx_uid] = cocs_for_dx
+                    relevant_dx_uids = set(df_all_periods["DX_UID"].unique().to_list())
+
+                expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
+                for dx_uid, mapping in push_mappings.items():
+                    if dx_uid not in relevant_dx_uids:
+                        continue
+                    coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
+                    for _src_coc, target_coc in coc_map.items():
+                        if target_coc is None:
+                            continue
+                        coc_id = str(target_coc).strip()
+                        if not coc_id:
+                            continue
+                        expected_dx_uids_by_coc_sets.setdefault(coc_id, set()).add(dx_uid)
+
+                expected_dx_uids_by_coc = {
+                    coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
+                }
+                if expected_dx_uids_by_coc:
+                    current_run.log_info(
+                        f"[summary] Expected DX_UIDs per COC loaded from push_config: {expected_dx_uids_by_coc}"
+                    )
+            except Exception as e:
+                current_run.log_warning(
+                    f"[summary] Could not load expected DX_UIDs per COC from push_config, will fall back to data: {e!s}"
+                )
+                expected_dx_uids_by_coc = {}
+
+            if not expected_dx_uids_by_coc:
+                expected_dx_uids_by_coc = {}
+                for coc in all_cocs:
+                    coc_data = df_all_periods.filter(pl.col("CATEGORY_OPTION_COMBO") == coc)
+                    expected_dx_uids_by_coc[coc] = sorted(coc_data["DX_UID"].unique().to_list())
             
             for period in periods:
                 df_period = df.filter(pl.col("PERIOD") == period)
@@ -373,89 +459,80 @@ def compute_exhaustivity(
                     if len(df_period_org) == 0:
                         continue
                     
-                    # Get all COCs that appear for this org_unit in this period (across all DX_UIDs)
-                    cocs_in_period_org = sorted(df_period_org["CATEGORY_OPTION_COMBO"].unique().to_list())
-                    
-                    # Create a pivot table: dx_uid (rows) x coc (columns)
+                    # Create a pivot table: coc (rows) x dx_uid (columns)
                     pivot_data = []
-                    for dx_uid in dx_uids:
-                        # Get expected COCs for this DX_UID (global, across all periods)
-                        expected_cocs = all_cocs_by_dx.get(dx_uid, [])
+                    for coc in all_cocs:
+                        # Get expected DX_UIDs for this COC (global, across all periods)
+                        expected_dx_uids = expected_dx_uids_by_coc.get(coc, [])
                         
-                        row_data = {"DX_UID": dx_uid}
-                        for coc in expected_cocs:
+                        row_data = {"CATEGORY_OPTION_COMBO": coc}
+                        for dx_uid in dx_uids:
                             value_row = df_period_org.filter(
-                                (pl.col("DX_UID") == dx_uid) & 
-                                (pl.col("CATEGORY_OPTION_COMBO") == coc)
+                                (pl.col("CATEGORY_OPTION_COMBO") == coc) & 
+                                (pl.col("DX_UID") == dx_uid)
                             )
                             if len(value_row) > 0:
                                 value = value_row["VALUE"][0]
                                 is_null = value_row["VALUE_IS_NULL"][0]
                                 if is_null or value is None:
-                                    row_data[coc] = "NULL"
+                                    row_data[dx_uid] = "NULL"
                                 else:
-                                    row_data[coc] = str(value)
+                                    row_data[dx_uid] = str(value)
                             else:
-                                row_data[coc] = "MISSING"
+                                row_data[dx_uid] = "MISSING"
                         pivot_data.append(row_data)
                     
                     # Write table header
                     f.write("\n" + "=" * 80 + "\n")
                     f.write(f"PERIOD: {period} | ORG_UNIT (Hôpital): {org_unit}\n")
                     f.write("=" * 80 + "\n")
-                    f.write("Format: Lignes = DX_UID (Médicaments), Colonnes = Category Option Combo\n")
+                    f.write("Format: Lignes = Category Option Combo, Colonnes = DX_UID (Médicaments)\n")
                     f.write("Valeurs: NULL = valeur manquante/null, MISSING = combinaison absente\n")
                     f.write("-" * 80 + "\n\n")
                     
-                    # Get all unique COCs across all DX_UIDs (global) for column headers
-                    all_cocs = set()
-                    for dx_uid in dx_uids:
-                        all_cocs.update(all_cocs_by_dx.get(dx_uid, []))
-                    all_cocs = sorted(list(all_cocs))
-                    
                     # Calculate column widths
-                    dx_uid_width = max(len("DX_UID"), max(len(dx) for dx in dx_uids))
-                    coc_widths = {coc: max(len(coc), 10) for coc in all_cocs}
+                    coc_width = max(len("CATEGORY_OPTION_COMBO"), max(len(coc) for coc in all_cocs))
+                    dx_uid_widths = {dx_uid: max(len(dx_uid), 10) for dx_uid in dx_uids}
                     
                     # Write header row
-                    header = f"{'DX_UID':<{dx_uid_width}}"
-                    for coc in all_cocs:
-                        header += f" | {coc:<{coc_widths[coc]}}"
+                    header = f"{'CATEGORY_OPTION_COMBO':<{coc_width}}"
+                    for dx_uid in dx_uids:
+                        header += f" | {dx_uid:<{dx_uid_widths[dx_uid]}}"
                     f.write(header + "\n")
                     f.write("-" * len(header) + "\n")
                     
                     # Write data rows
                     for row_data in pivot_data:
-                        row_str = f"{row_data['DX_UID']:<{dx_uid_width}}"
-                        for coc in all_cocs:
-                            value = row_data.get(coc, "MISSING")
-                            row_str += f" | {value:<{coc_widths[coc]}}"
+                        row_str = f"{row_data['CATEGORY_OPTION_COMBO']:<{coc_width}}"
+                        for dx_uid in dx_uids:
+                            value = row_data.get(dx_uid, "MISSING")
+                            row_str += f" | {value:<{dx_uid_widths[dx_uid]}}"
                         f.write(row_str + "\n")
                     
-                    # Calculate exhaustivity score for each dx_uid based on the table data
-                    # If any COC in the table is MISSING or NULL for a DX_UID, score = 0
+                    # Calculate exhaustivity score for each COC based on the table data
+                    # If any expected DX_UID is MISSING or NULL for a COC, score = 0
                     f.write("\n" + "-" * 80 + "\n")
                     f.write("EXHAUSTIVITY SCORES (0 = oubli détecté, 1 = complet):\n")
                     f.write("-" * 80 + "\n")
                     for row_data in pivot_data:
-                        dx_uid = row_data["DX_UID"]
-                        # Get expected COCs for this DX_UID
-                        expected_cocs_for_dx = all_cocs_by_dx.get(dx_uid, [])
+                        coc = row_data["CATEGORY_OPTION_COMBO"]
+                        # Get expected DX_UIDs for this COC
+                        expected_dx_uids_for_coc = expected_dx_uids_by_coc.get(coc, [])
                         
-                        # Check if all expected COCs are present and not MISSING/NULL
+                        # Check if all expected DX_UIDs are present and not MISSING/NULL
                         has_missing = False
-                        missing_cocs_list = []
-                        for coc in expected_cocs_for_dx:
-                            value = row_data.get(coc, "MISSING")
+                        missing_dx_uids_list = []
+                        for dx_uid in expected_dx_uids_for_coc:
+                            value = row_data.get(dx_uid, "MISSING")
                             if value == "MISSING" or value == "NULL":
                                 has_missing = True
-                                missing_cocs_list.append(coc)
+                                missing_dx_uids_list.append(dx_uid)
                         
                         score = 0 if has_missing else 1
                         if has_missing:
-                            f.write(f"DX_UID={dx_uid} | SCORE={score} (MISSING: {', '.join(missing_cocs_list)})\n")
+                            f.write(f"COC={coc} | SCORE={score} (MISSING: {', '.join(missing_dx_uids_list)})\n")
                         else:
-                            f.write(f"DX_UID={dx_uid} | SCORE={score}\n")
+                            f.write(f"COC={coc} | SCORE={score}\n")
                     f.write("\n")
         
         return exhaustivity_df
@@ -488,11 +565,11 @@ def compute_and_log_exhaustivity(
     Returns
     -------
     pl.DataFrame
-        DataFrame with columns: PERIOD, DX_UID, EXHAUSTIVITY_VALUE
+        DataFrame with columns: PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
     """
     if not run_task:
         current_run.log_info("Exhaustivity calculation skipped.")
-        return pl.DataFrame({"PERIOD": [], "DX_UID": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
+        return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
     
     try:
         # Load configuration if not provided
@@ -504,12 +581,12 @@ def compute_and_log_exhaustivity(
         target_extract = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])
         if not target_extract:
             current_run.log_error("No extracts found in configuration for exhaustivity calculation.")
-            return pl.DataFrame({"PERIOD": [], "DX_UID": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
+            return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
         
         extract_id = target_extract[0].get("EXTRACT_UID")
         if not extract_id:
             current_run.log_error("No EXTRACT_UID found in configuration for exhaustivity calculation.")
-            return pl.DataFrame({"PERIOD": [], "DX_UID": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
+            return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
         
         # Get periods from configuration (using same logic as extraction)
         from datetime import datetime
@@ -538,7 +615,7 @@ def compute_and_log_exhaustivity(
             )
         except Exception as e:
             current_run.log_error(f"Error generating periods: {e!s}")
-            return pl.DataFrame({"PERIOD": [], "DX_UID": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
+            return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
         
         # Compute exhaustivity
         exhaustivity_df = compute_exhaustivity(
@@ -551,4 +628,4 @@ def compute_and_log_exhaustivity(
     except Exception as e:
         logging.error(f"Exhaustivity calculation error: {e!s}")
         current_run.log_error(f"Error in exhaustivity calculation: {e!s}")
-        return pl.DataFrame({"PERIOD": [], "DX_UID": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
+        return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
