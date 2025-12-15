@@ -1,5 +1,6 @@
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -414,11 +415,17 @@ def compute_exhaustivity_and_queue(
                 expected_org_units = None
                 expected_cocs = None
                 try:
-                    # Use cached data if available, otherwise read files
+                    # Use cached data if available, otherwise read files in parallel
                     if all_period_data_cache is None:
                         all_period_files_list = list(extracts_folder.glob("data_*.parquet"))
                         if all_period_files_list:
-                            all_period_data_cache = pl.concat([pl.read_parquet(f) for f in all_period_files_list])
+                            # Read files in parallel for better performance
+                            def read_parquet_file(file_path: Path) -> pl.DataFrame:
+                                return pl.read_parquet(file_path)
+                            
+                            with ThreadPoolExecutor(max_workers=min(len(all_period_files_list), 8)) as executor:
+                                dataframes = list(executor.map(read_parquet_file, all_period_files_list))
+                            all_period_data_cache = pl.concat(dataframes)
                     
                     if all_period_data_cache is not None and len(all_period_data_cache) > 0:
                         expected_org_units = all_period_data_cache["ORG_UNIT"].unique().to_list()
@@ -453,7 +460,12 @@ def compute_exhaustivity_and_queue(
                     
                     # Save all combinations for this period into a single parquet file
                     try:
-                        df_final = format_for_exhaustivity_import(missing_data_df, original_data=original_data)
+                        df_final = format_for_exhaustivity_import(
+                            missing_data_df, 
+                            original_data=original_data,
+                            pipeline_path=pipeline_path,
+                            extract_id=extract_id
+                        )
                         save_to_parquet(
                             data=df_final,
                             filename=output_dir / f"exhaustivity_{period}.parquet",
@@ -484,11 +496,17 @@ def compute_exhaustivity_and_queue(
                 # Get expected org units from the extracted data (all unique ORG_UNITs across all periods)
                 # This ensures we include all org units that have data for any period
                 try:
-                    # Use cached data if available, otherwise read files
+                    # Use cached data if available, otherwise read files in parallel
                     if all_period_data_cache is None:
                         all_period_files_list = list(extracts_folder.glob("data_*.parquet"))
                         if all_period_files_list:
-                            all_period_data_cache = pl.concat([pl.read_parquet(f) for f in all_period_files_list])
+                            # Read files in parallel for better performance
+                            def read_parquet_file(file_path: Path) -> pl.DataFrame:
+                                return pl.read_parquet(file_path)
+                            
+                            with ThreadPoolExecutor(max_workers=min(len(all_period_files_list), 8)) as executor:
+                                dataframes = list(executor.map(read_parquet_file, all_period_files_list))
+                            all_period_data_cache = pl.concat(dataframes)
                     
                     if all_period_data_cache is not None and len(all_period_data_cache) > 0:
                         expected_org_units = all_period_data_cache["ORG_UNIT"].unique().to_list()
@@ -525,7 +543,12 @@ def compute_exhaustivity_and_queue(
             
             # Save all combinations for this period into a single parquet file
             try:
-                df_final = format_for_exhaustivity_import(period_exhaustivity, original_data=original_data)
+                df_final = format_for_exhaustivity_import(
+                    period_exhaustivity, 
+                    original_data=original_data,
+                    pipeline_path=pipeline_path,
+                    extract_id=extract_id
+                )
                 save_to_parquet(
                     data=df_final,
                     filename=output_dir / f"exhaustivity_{period}.parquet",
@@ -542,7 +565,12 @@ def compute_exhaustivity_and_queue(
         push_queue.enqueue("FINISH")
 
 
-def format_for_exhaustivity_import(exhaustivity_df: pl.DataFrame, original_data: pl.DataFrame = None) -> pd.DataFrame:
+def format_for_exhaustivity_import(
+    exhaustivity_df: pl.DataFrame, 
+    original_data: pl.DataFrame = None,
+    pipeline_path: Path = None,
+    extract_id: str = None,
+) -> pd.DataFrame:
     """Formats the exhaustivity DataFrame for DHIS2 import.
 
     Parameters
@@ -551,25 +579,115 @@ def format_for_exhaustivity_import(exhaustivity_df: pl.DataFrame, original_data:
         DataFrame with columns: PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
     original_data : pl.DataFrame, optional
         Original data to determine expected DX_UIDs for each COC. If not provided, will try to infer from exhaustivity_df.
+    pipeline_path : Path, optional
+        Path to pipeline directory to load push_config for mappings.
+    extract_id : str, optional
+        Extract ID to find the correct mapping in push_config.
 
     Returns
     -------
     pd.DataFrame
         A DataFrame formatted for DHIS2 import with columns:
-        DATA_TYPE, DX_UID, PERIOD, ORG_UNIT, VALUE, etc.
-        Creates one entry per DX_UID expected for each COC.
+        DATA_TYPE, DX_UID (target UID from mapping), PERIOD, ORG_UNIT, VALUE, etc.
+        Creates one entry per DX_UID target expected for each COC.
     """
-    # Determine expected DX_UIDs for each COC
-    if original_data is not None and len(original_data) > 0:
-        # Group by COC to get expected DX_UIDs
+    # Load push_config to get mappings (source DX_UID -> target DX_UID)
+    target_dx_uids_by_coc: dict[str, list[str]] = {}
+    
+    if pipeline_path and extract_id:
+        try:
+            push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+            push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+            
+            # Find the extract config for this extract_id
+            # Try exact match first, then try pattern matching (e.g., "Fosa" -> "level_fosa")
+            push_extract_config = None
+            for push_extract in push_extracts:
+                if push_extract.get("EXTRACT_UID") == extract_id:
+                    push_extract_config = push_extract
+                    break
+            
+            # If no exact match, try pattern matching
+            if not push_extract_config:
+                if "Fosa" in extract_id or "fosa" in extract_id.lower():
+                    for push_extract in push_extracts:
+                        if "fosa" in push_extract.get("EXTRACT_UID", "").lower():
+                            push_extract_config = push_extract
+                            current_run.log_info(f"Matched extract_id '{extract_id}' to push_config EXTRACT_UID '{push_extract_config.get('EXTRACT_UID')}' by pattern")
+                            break
+                elif "BCZ" in extract_id or "bcz" in extract_id.lower():
+                    for push_extract in push_extracts:
+                        if "bcz" in push_extract.get("EXTRACT_UID", "").lower() or "level_zs" in push_extract.get("EXTRACT_UID", "").lower():
+                            push_extract_config = push_extract
+                            current_run.log_info(f"Matched extract_id '{extract_id}' to push_config EXTRACT_UID '{push_extract_config.get('EXTRACT_UID')}' by pattern")
+                            break
+            
+            if push_extract_config:
+                push_mappings = push_extract_config.get("MAPPINGS", {})
+                
+                # Get relevant source DX_UIDs from original_data (if available) to filter mappings
+                # Only include mappings for DX_UIDs that are actually in the data
+                relevant_source_uids = set()
+                if original_data is not None and len(original_data) > 0:
+                    relevant_source_uids = set(original_data["DX_UID"].unique().to_list())
+                
+                # Build mapping: target_COC -> list of target_DX_UIDs
+                # For each source DX_UID in mappings, get the target UID and target COCs
+                # Only include if the source DX_UID is in the relevant set (or if no filter available)
+                for source_dx_uid, mapping in push_mappings.items():
+                    # Filter: only include if source_dx_uid is in relevant_source_uids (or if no filter)
+                    if relevant_source_uids and source_dx_uid not in relevant_source_uids:
+                        continue
+                    
+                    target_dx_uid = mapping.get("UID")  # Target DX_UID after mapping
+                    if not target_dx_uid:
+                        continue
+                    
+                    coc_mappings = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
+                    # For each target COC, add the target DX_UID
+                    for _src_coc, target_coc in coc_mappings.items():
+                        if target_coc is None:
+                            continue
+                        target_coc_id = str(target_coc).strip()
+                        if not target_coc_id:
+                            continue
+                        if target_coc_id not in target_dx_uids_by_coc:
+                            target_dx_uids_by_coc[target_coc_id] = []
+                        if target_dx_uid not in target_dx_uids_by_coc[target_coc_id]:
+                            target_dx_uids_by_coc[target_coc_id].append(target_dx_uid)
+                
+                # Sort for consistency
+                target_dx_uids_by_coc = {
+                    coc: sorted(dx_uids) for coc, dx_uids in target_dx_uids_by_coc.items()
+                }
+                
+                current_run.log_info(
+                    f"Loaded target DX_UIDs per COC from push_config for {extract_id}: {target_dx_uids_by_coc}"
+                )
+        except Exception as e:
+            current_run.log_warning(f"Could not load push_config mappings: {e!s}")
+            target_dx_uids_by_coc = {}
+    
+    # Fallback: if no push_config mapping, use original_data to infer DX_UIDs
+    if not target_dx_uids_by_coc and original_data is not None and len(original_data) > 0:
+        # Group by COC to get DX_UIDs (these are source DX_UIDs, not target)
         expected_dx_uids_by_coc = (
             original_data.group_by("CATEGORY_OPTION_COMBO")
             .agg(pl.col("DX_UID").unique().alias("DX_UIDs"))
         )
-    else:
-        # If no original data, we can't determine expected DX_UIDs
-        # This should not happen in normal flow, but handle gracefully
-        current_run.log_warning("No original data provided to format_for_exhaustivity_import, cannot determine expected DX_UIDs")
+        # Convert to dict format
+        target_dx_uids_by_coc = {
+            row["CATEGORY_OPTION_COMBO"]: row["DX_UIDs"] 
+            for row in expected_dx_uids_by_coc.iter_rows(named=True)
+        }
+        current_run.log_warning(
+            "Using source DX_UIDs from original_data (no push_config mapping available). "
+            "Target DX_UIDs may not match push_config."
+        )
+    
+    if not target_dx_uids_by_coc:
+        # If no mapping available, we can't determine expected DX_UIDs
+        current_run.log_warning("No mapping available to determine expected DX_UIDs")
         return pl.DataFrame({
             "DATA_TYPE": [],
             "DX_UID": [],
@@ -581,18 +699,27 @@ def format_for_exhaustivity_import(exhaustivity_df: pl.DataFrame, original_data:
             "DOMAIN_TYPE": [],
         }).to_pandas()
     
-    # Optimized: Use Polars vectorized operations instead of Python loops
-    # Join exhaustivity_df with expected_dx_uids_by_coc to get DX_UIDs for each COC
-    # Then explode to create one row per DX_UID
+    # Create DataFrame with target DX_UIDs per COC (as lists for explode)
+    target_dx_uids_list = []
+    for coc, dx_uids in target_dx_uids_by_coc.items():
+        target_dx_uids_list.append({
+            "CATEGORY_OPTION_COMBO": coc,
+            "DX_UIDs": dx_uids  # List of TARGET DX_UIDs from mapping
+        })
+    target_dx_uids_df = pl.DataFrame(target_dx_uids_list)
+    
+    # Optimized: Use Polars vectorized operations
+    # Join exhaustivity_df with target_dx_uids_df to get target DX_UIDs for each COC
+    # Then explode to create one row per target DX_UID
     expanded_df = (
         exhaustivity_df
         .join(
-            expected_dx_uids_by_coc,
+            target_dx_uids_df,
             on="CATEGORY_OPTION_COMBO",
             how="left"
         )
-        .explode("DX_UIDs")
-        .rename({"DX_UIDs": "DX_UID"})
+        .explode("DX_UIDs")  # Explode the list to create one row per DX_UID
+        .rename({"DX_UIDs": "DX_UID"})  # Rename to DX_UID
         .drop("CATEGORY_OPTION_COMBO")
     )
     
@@ -609,7 +736,7 @@ def format_for_exhaustivity_import(exhaustivity_df: pl.DataFrame, original_data:
         }).to_pandas()
     
     # Format for DHIS2 import using polars
-    # Each row represents an exhaustivity value for a (PERIOD, DX_UID, ORG_UNIT) combination
+    # Each row represents an exhaustivity value for a (PERIOD, DX_UID (target), ORG_UNIT) combination
     df_final = expanded_df.with_columns([
         pl.lit("DATA_ELEMENT").alias("DATA_TYPE"),
         pl.col("EXHAUSTIVITY_VALUE").cast(pl.Int64).alias("VALUE"),
@@ -618,7 +745,7 @@ def format_for_exhaustivity_import(exhaustivity_df: pl.DataFrame, original_data:
         pl.lit("AGGREGATED").alias("DOMAIN_TYPE"),
     ]).select([
         "DATA_TYPE",
-        "DX_UID",
+        "DX_UID",  # This is now the TARGET DX_UID from push_config mapping
         "PERIOD",
         "ORG_UNIT",
         "VALUE",
