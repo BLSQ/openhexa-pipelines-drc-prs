@@ -462,39 +462,21 @@ def compute_exhaustivity_and_queue(
                     except Exception as e:
                         current_run.log_warning(f"Could not read original data for missing period: {e}")
                     
-                    # Save each combination (period, org_unit, coc) in a separate file
+                    # Save all combinations for this period into a single parquet file
                     try:
-                        for combo_row in missing_data_df.iter_rows(named=True):
-                            period_combo = combo_row["PERIOD"]
-                            org_unit_combo = combo_row["ORG_UNIT"]
-                            coc_combo = combo_row["CATEGORY_OPTION_COMBO"]
-                            
-                            # Filter for this specific combination
-                            combo_exhaustivity = missing_data_df.filter(
-                                (pl.col("PERIOD") == period_combo) &
-                                (pl.col("ORG_UNIT") == org_unit_combo) &
-                                (pl.col("CATEGORY_OPTION_COMBO") == coc_combo)
-                            )
-                            
-                            # Format for DHIS2 import
-                            df_final = format_for_exhaustivity_import(combo_exhaustivity, original_data=original_data)
-                            
-                            # Create filename: exhaustivity_period_orgunit_coc.parquet
-                            filename = output_dir / f"exhaustivity_{period_combo}_{org_unit_combo}_{coc_combo}.parquet"
-                            
-                            save_to_parquet(
-                                data=df_final,
-                                filename=filename,
-                            )
-                            push_queue.enqueue(f"{extract_id}|{filename}")
-                        
+                        df_final = format_for_exhaustivity_import(missing_data_df, original_data=original_data)
+                        save_to_parquet(
+                            data=df_final,
+                            filename=output_dir / f"exhaustivity_{period}.parquet",
+                        )
+                        push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
                         current_run.log_info(
                             f"Created exhaustivity entries with value 0 for {len(expected_cocs)} COCs "
                             f"and {len(expected_org_units)} ORG_UNITs ({len(all_combinations)} combinations, no data for period {period})"
                         )
                     except Exception as e:
                         logging.error(f"Exhaustivity saving error: {e!s}")
-                        current_run.log_error(f"Error saving exhaustivity parquet files for period {period}.")
+                        current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
                 else:
                     current_run.log_warning(
                         f"No org units or COCs found from other periods for extract {extract_id}, "
@@ -559,41 +541,20 @@ def compute_exhaustivity_and_queue(
                 except Exception as e:
                     current_run.log_warning(f"Could not read original data for period {period}: {e}")
             
-            # Save each combination (period, org_unit, coc) in a separate file
+            # Save all combinations for this period into a single parquet file
             try:
-                # Get unique combinations
-                unique_combinations = period_exhaustivity.select(["PERIOD", "ORG_UNIT", "CATEGORY_OPTION_COMBO"]).unique()
-                
-                for combo_row in unique_combinations.iter_rows(named=True):
-                    period_combo = combo_row["PERIOD"]
-                    org_unit_combo = combo_row["ORG_UNIT"]
-                    coc_combo = combo_row["CATEGORY_OPTION_COMBO"]
-                    
-                    # Filter exhaustivity data for this specific combination
-                    combo_exhaustivity = period_exhaustivity.filter(
-                        (pl.col("PERIOD") == period_combo) &
-                        (pl.col("ORG_UNIT") == org_unit_combo) &
-                        (pl.col("CATEGORY_OPTION_COMBO") == coc_combo)
-                    )
-                    
-                    # Format for DHIS2 import
-                    df_final = format_for_exhaustivity_import(combo_exhaustivity, original_data=original_data)
-                    
-                    # Create filename: exhaustivity_period_orgunit_coc.parquet
-                    filename = output_dir / f"exhaustivity_{period_combo}_{org_unit_combo}_{coc_combo}.parquet"
-                    
-                    save_to_parquet(
-                        data=df_final,
-                        filename=filename,
-                    )
-                    push_queue.enqueue(f"{extract_id}|{filename}")
-                
+                df_final = format_for_exhaustivity_import(period_exhaustivity, original_data=original_data)
+                save_to_parquet(
+                    data=df_final,
+                    filename=output_dir / f"exhaustivity_{period}.parquet",
+                )
+                push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
                 current_run.log_info(
-                    f"Saved {len(unique_combinations)} exhaustivity files for period {period}"
+                    f"Saved {len(df_final)} exhaustivity rows for period {period}"
                 )
             except Exception as e:
                 logging.error(f"Exhaustivity saving error: {e!s}")
-                current_run.log_error(f"Error saving exhaustivity parquet files for period {period}.")
+                current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
     finally:
         current_run.log_info("Exhaustivity computation finished.")
         push_queue.enqueue("FINISH")
