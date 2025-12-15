@@ -23,6 +23,19 @@ from utils import (
     save_to_parquet,
 )
 
+# Reuse organisation units and dataset sync logic from dhis2_dataset_sync pipeline when available.
+try:
+    from dhis2_dataset_sync.pipeline import (
+        sync_organisation_units as ds_sync_organisation_units,
+        sync_dataset_organisation_units as ds_sync_dataset_organisation_units,
+        sync_dataset_statuses as ds_sync_dataset_statuses,
+    )
+except Exception:
+    # Local runs without the other pipeline: simply disable those helpers.
+    ds_sync_organisation_units = None
+    ds_sync_dataset_organisation_units = None
+    ds_sync_dataset_statuses = None
+
 # Ticket(s) related to this pipeline:
 #   -https://bluesquare.atlassian.net/browse/SAN-123
 #   -https://bluesquare.atlassian.net/browse/SAN-124
@@ -31,6 +44,13 @@ from utils import (
 
 # extract data from source DHIS2
 @pipeline("dhis2_exhaustivity")
+@parameter(
+    code="run_ou_sync",
+    name="Run org units & datasets sync (recommended)",
+    type=bool,
+    default=True,
+    help="Run organisation units and dataset OU sync using the dhis2_dataset_sync logic before exhaustivity.",
+)
 @parameter(
     code="run_extract_data",
     name="Extract data",
@@ -47,15 +67,39 @@ from utils import (
     default=False,
     help="Push data to target DHIS2. Set to True only for production runs.",
 )
-def dhis2_exhaustivity(run_extract_data: bool, run_push_data: bool):
+@parameter(
+    code="run_ds_sync",
+    name="Sync dataset statuses (after push)",
+    type=bool,
+    default=False,
+    help="Sync dataset completion statuses between source and target DHIS2 using the dhis2_dataset_sync logic.",
+)
+def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_push_data: bool, run_ds_sync: bool):
     """Extract data elements from the PRS DHIS2 instance.
 
     Compute the exhaustivity value based on required columns completeness.
     The results are then pushed back to PRS DHIS2 to the target exhaustivity data elements.
     """
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_exhaustivity"
+    dataset_sync_path = Path(workspace.files_path) / "pipelines" / "dhis2_dataset_sync"
 
     try:
+        # 1) Optional org units + dataset OU sync, reusing dhis2_dataset_sync pipeline logic
+        if run_ou_sync and ds_sync_organisation_units and ds_sync_dataset_organisation_units:
+            current_run.log_info("Starting organisation units sync via dhis2_dataset_sync pipeline.")
+            pyramid_ready = ds_sync_organisation_units(
+                pipeline_path=dataset_sync_path,
+                run_task=True,
+            )
+
+            current_run.log_info("Starting dataset organisation units sync via dhis2_dataset_sync pipeline.")
+            ds_sync_dataset_organisation_units(
+                pipeline_path=dataset_sync_path,
+                run_task=True,
+                wait=pyramid_ready,
+            )
+
+        # 2) Extract & compute exhaustivity (this pipeline)
         extract_data(
             pipeline_path=pipeline_path,
             run_task=run_extract_data,
@@ -71,6 +115,15 @@ def dhis2_exhaustivity(run_extract_data: bool, run_push_data: bool):
             run_task=run_push_data,
             wait=sync_ready,
         )
+
+        # 3) Optional dataset statuses sync (after push), via dhis2_dataset_sync
+        if run_push_data and run_ds_sync and ds_sync_dataset_statuses:
+            current_run.log_info("Starting dataset statuses sync via dhis2_dataset_sync pipeline.")
+            ds_sync_dataset_statuses(
+                pipeline_path=dataset_sync_path,
+                run_task=True,
+                wait=True,
+            )
 
     except Exception as e:
         current_run.log_error(f"An error occurred: {e}")
