@@ -418,67 +418,67 @@ def compute_exhaustivity_and_queue(
                         break
                 
                 # Get expected org units and COCs from other periods' data
-                    expected_org_units = None
+                expected_org_units = None
                 expected_cocs = None
-                    try:
+                try:
                     # Read all parquet files to get all org units and COCs
-                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                        if all_period_files:
-                            all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
-                            expected_org_units = all_data["ORG_UNIT"].unique().to_list()
+                    all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                    if all_period_files:
+                        all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                        expected_org_units = all_data["ORG_UNIT"].unique().to_list()
                         expected_cocs = all_data["CATEGORY_OPTION_COMBO"].unique().to_list()
-                    except Exception as e:
+                except Exception as e:
                     current_run.log_warning(f"Could not determine expected org units and COCs: {e}")
                     
                 if expected_org_units and expected_cocs:
                     # Create a complete grid of (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT) with exhaustivity = 0
-                        all_combinations = []
+                    all_combinations = []
                     for coc in expected_cocs:
-                            for org_unit in expected_org_units:
-                                all_combinations.append({
-                                    "PERIOD": period,
+                        for org_unit in expected_org_units:
+                            all_combinations.append({
+                                "PERIOD": period,
                                 "CATEGORY_OPTION_COMBO": coc,
-                                    "ORG_UNIT": org_unit,
-                                    "EXHAUSTIVITY_VALUE": 0,
-                                })
-                        
-                        missing_data_df = pl.DataFrame(all_combinations)
-                        
-                        # Format for DHIS2 import
-                        # For missing data, we need to read other periods' data to determine expected DX_UIDs for each COC
-                        original_data = None
-                        try:
-                            all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                            if all_period_files:
-                                original_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
-                        except Exception as e:
-                            current_run.log_warning(f"Could not read original data for missing period: {e}")
-                        df_final = format_for_exhaustivity_import(
-                            missing_data_df, 
-                            original_data=original_data,
-                            pipeline_path=pipeline_path,
-                            extract_id=extract_id,
-                            extract_config_item=extract_config_item,
+                                "ORG_UNIT": org_unit,
+                                "EXHAUSTIVITY_VALUE": 0,
+                            })
+                    
+                    missing_data_df = pl.DataFrame(all_combinations)
+                    
+                    # Format for DHIS2 import
+                    # For missing data, we need to read other periods' data to determine expected DX_UIDs for each COC
+                    original_data = None
+                    try:
+                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                        if all_period_files:
+                            original_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                    except Exception as e:
+                        current_run.log_warning(f"Could not read original data for missing period: {e}")
+                    df_final = format_for_exhaustivity_import(
+                        missing_data_df, 
+                        original_data=original_data,
+                        pipeline_path=pipeline_path,
+                        extract_id=extract_id,
+                        extract_config_item=extract_config_item,
+                    )
+                    
+                    try:
+                        save_to_parquet(
+                            data=df_final,
+                            filename=output_dir / f"exhaustivity_{period}.parquet",
                         )
-                        
-                        try:
-                            save_to_parquet(
-                                data=df_final,
-                                filename=output_dir / f"exhaustivity_{period}.parquet",
-                            )
-                            push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
-                            current_run.log_info(
+                        push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
+                        current_run.log_info(
                             f"Created exhaustivity entries with value 0 for {len(expected_cocs)} COCs "
-                                f"and {len(expected_org_units)} ORG_UNITs ({len(all_combinations)} combinations, no data for period {period})"
-                            )
-                        except Exception as e:
-                            logging.error(f"Exhaustivity saving error: {e!s}")
-                            current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
-                    else:
-                        current_run.log_warning(
-                        f"No org units or COCs found from other periods for extract {extract_id}, "
-                            f"cannot create exhaustivity entries for period {period}"
+                            f"and {len(expected_org_units)} ORG_UNITs ({len(all_combinations)} combinations, no data for period {period})"
                         )
+                    except Exception as e:
+                        logging.error(f"Exhaustivity saving error: {e!s}")
+                        current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
+                else:
+                    current_run.log_warning(
+                        f"No org units or COCs found from other periods for extract {extract_id}, "
+                        f"cannot create exhaustivity entries for period {period}"
+                    )
                 continue
 
             # Get expected DX_UIDs and ORG_UNITs from extract configuration
@@ -507,19 +507,19 @@ def compute_exhaustivity_and_queue(
                     )
                 else:
                     # Fallback: get from extracted data
-                try:
-                    # Read all parquet files to get all org units
-                    all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                    if all_period_files:
-                        all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
-                        expected_org_units = all_data["ORG_UNIT"].unique().to_list()
+                    try:
+                        # Read all parquet files to get all org units
+                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                        if all_period_files:
+                            all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                            expected_org_units = all_data["ORG_UNIT"].unique().to_list()
                             current_run.log_info(
                                 f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
                                 f"(no ORG_UNITS in extract_config)"
                             )
-                except Exception as e:
-                    current_run.log_warning(f"Could not determine expected org units: {e}")
-                    expected_org_units = None
+                    except Exception as e:
+                        current_run.log_warning(f"Could not determine expected org units: {e}")
+                        expected_org_units = None
             
             # Compute exhaustivity values for ALL periods (not just current period)
             # This ensures we detect missing periods
