@@ -498,23 +498,36 @@ def compute_exhaustivity_and_queue(
             
             if extract_config_item:
                 expected_dx_uids = extract_config_item.get("UIDS", [])
-                # Get expected org units from the extracted data (all unique ORG_UNITs across all periods)
-                # This ensures we include all org units that have data for any period
-                try:
-                    # Read all parquet files to get all org units
-                    all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                    if all_period_files:
-                        all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
-                        expected_org_units = all_data["ORG_UNIT"].unique().to_list()
-                except Exception as e:
-                    current_run.log_warning(f"Could not determine expected org units: {e}")
-                    expected_org_units = None
+                # Get expected org units: prefer from extract_config ORG_UNITS if available,
+                # otherwise from extracted data (all unique ORG_UNITs across all periods)
+                if extract_config_item.get("ORG_UNITS"):
+                    expected_org_units = extract_config_item.get("ORG_UNITS")
+                    current_run.log_info(
+                        f"Using {len(expected_org_units)} expected ORG_UNITs from extract_config"
+                    )
+                else:
+                    # Fallback: get from extracted data
+                    try:
+                        # Read all parquet files to get all org units
+                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                        if all_period_files:
+                            all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                            expected_org_units = all_data["ORG_UNIT"].unique().to_list()
+                            current_run.log_info(
+                                f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
+                                f"(no ORG_UNITS in extract_config)"
+                            )
+                    except Exception as e:
+                        current_run.log_warning(f"Could not determine expected org units: {e}")
+                        expected_org_units = None
             
-            # Compute exhaustivity values for this period (returns DataFrame with PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE)
+            # Compute exhaustivity values for ALL periods (not just current period)
+            # This ensures we detect missing periods
+            # Returns DataFrame with PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
             exhaustivity_df = compute_exhaustivity(
                 pipeline_path=pipeline_path,
                 extract_id=extract_id,
-                periods=[period],
+                periods=exhaustivity_periods,  # Pass all periods, not just current
                 expected_dx_uids=expected_dx_uids,
                 expected_org_units=expected_org_units,
                 extract_config_item=extract_config_item,
@@ -601,13 +614,21 @@ def format_for_exhaustivity_import(
             for push_extract in push_extracts:
                 push_mappings.update(push_extract.get("MAPPINGS", {}))
 
-            # Limit to DX_UIDs that are relevant for this extract
+            # Limit to DX_UIDs that are relevant for this extract (from extract_config, not from original_data)
+            # We want to include ALL DX_UIDs from push_config that are in the extract config,
+            # even if they don't have data in original_data (they should still get exhaustivity=0 entries)
             if extract_config_item and extract_config_item.get("UIDS"):
                 relevant_dx_uids = set(extract_config_item.get("UIDS", []))
-            elif original_data is not None and len(original_data) > 0:
-                relevant_dx_uids = set(original_data["DX_UID"].unique().to_list())
+                current_run.log_info(
+                    f"format_for_exhaustivity_import: Filtering push_config mappings to {len(relevant_dx_uids)} "
+                    f"DX_UIDs from extract_config"
+                )
             else:
+                # If no extract_config_item, use all DX_UIDs from push_config
                 relevant_dx_uids = None
+                current_run.log_info(
+                    "format_for_exhaustivity_import: No extract_config_item provided, using all DX_UIDs from push_config"
+                )
 
             expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
             for dx_uid, mapping in push_mappings.items():
@@ -625,12 +646,22 @@ def format_for_exhaustivity_import(
             expected_dx_uids_by_coc = {
                 coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
             }
+            if expected_dx_uids_by_coc:
+                current_run.log_info(
+                    f"Loaded expected DX_UIDs per COC from push_config for format_for_exhaustivity_import: "
+                    f"{len(expected_dx_uids_by_coc)} COCs, "
+                    f"total DX_UIDs: {sum(len(uids) for uids in expected_dx_uids_by_coc.values())}"
+                )
         except Exception as e:
             current_run.log_warning(f"Could not load expected DX_UIDs per COC from push_config: {e!s}")
             expected_dx_uids_by_coc = {}
     
     # 2) Fallback: use original_data if push_config didn't provide anything
     if not expected_dx_uids_by_coc and original_data is not None and len(original_data) > 0:
+        current_run.log_warning(
+            "format_for_exhaustivity_import: Using fallback to original_data for expected DX_UIDs per COC "
+            "(push_config did not provide mappings)"
+        )
         # Group by COC to get expected DX_UIDs
         expected_dx_uids_by_coc_df = (
             original_data.group_by("CATEGORY_OPTION_COMBO")
@@ -661,6 +692,17 @@ def format_for_exhaustivity_import(
     # Expand exhaustivity_df: for each (PERIOD, COC, ORG_UNIT, EXHAUSTIVITY_VALUE),
     # create entries for all expected DX_UIDs for that COC
     expanded_rows = []
+    cocs_in_exhaustivity = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list()
+    current_run.log_info(
+        f"format_for_exhaustivity_import: Processing {len(exhaustivity_df)} exhaustivity entries "
+        f"for {len(cocs_in_exhaustivity)} COCs"
+    )
+    # Log expected DX_UIDs for first few COCs for debugging
+    for coc in cocs_in_exhaustivity[:3]:
+        dx_uids = expected_dx_uids_by_coc.get(coc, [])
+        current_run.log_info(
+            f"format_for_exhaustivity_import: COC {coc} has {len(dx_uids)} expected DX_UIDs: {sorted(dx_uids)[:5]}..."
+        )
     for row in exhaustivity_df.iter_rows(named=True):
         period = row["PERIOD"]
         coc = row["CATEGORY_OPTION_COMBO"]
@@ -677,6 +719,16 @@ def format_for_exhaustivity_import(
                     "ORG_UNIT": org_unit,
                     "EXHAUSTIVITY_VALUE": exhaustivity_value,
                 })
+        else:
+            # Only log warning once per COC to avoid spam
+            if coc not in getattr(format_for_exhaustivity_import, '_warned_cocs', set()):
+                if not hasattr(format_for_exhaustivity_import, '_warned_cocs'):
+                    format_for_exhaustivity_import._warned_cocs = set()
+                format_for_exhaustivity_import._warned_cocs.add(coc)
+                current_run.log_warning(
+                    f"format_for_exhaustivity_import: No expected DX_UIDs found for COC {coc} "
+                    f"in push_config mapping. Available COCs: {list(expected_dx_uids_by_coc.keys())[:5]}..."
+                )
     
     if not expanded_rows:
         return pl.DataFrame({

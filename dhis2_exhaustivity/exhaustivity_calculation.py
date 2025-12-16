@@ -315,21 +315,34 @@ def compute_exhaustivity(
             )
         current_run.log_info("=" * 80)
         
-        # If expected DX_UIDs and ORG_UNITs are provided, create a complete grid
-        # and mark missing combinations as exhaustivity = 0
-        # For each COC, we need all expected DX_UIDs to have values
-        if expected_dx_uids and expected_org_units:
-            # Get unique periods and COCs from the data
-            periods_in_data = exhaustivity_df["PERIOD"].unique().to_list()
-            cocs_in_data = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list()
-            org_units_in_data = exhaustivity_df["ORG_UNIT"].unique().to_list()
+        # Create a complete grid using push_config mappings and expected periods/org_units
+        # This ensures we detect missing COCs, periods, and ORG_UNITs
+        periods_in_data = exhaustivity_df["PERIOD"].unique().to_list() if len(exhaustivity_df) > 0 else []
+        cocs_in_data = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list() if len(exhaustivity_df) > 0 else []
+        
+        # Use ALL COCs from push_config (not just those in data)
+        # This ensures we detect missing COCs even if they have no data
+        all_expected_cocs = set(expected_dx_uids_by_coc.keys())
+        if cocs_in_data:
+            all_expected_cocs.update(cocs_in_data)
+        all_expected_cocs = sorted(list(all_expected_cocs))
+        
+        # Use expected periods (from periods parameter) and expected ORG_UNITs
+        expected_periods = periods if periods else periods_in_data
+        expected_org_units_list = expected_org_units if expected_org_units else []
+        
+        # If we have expected periods and ORG_UNITs, create complete grid
+        if expected_periods and expected_org_units_list:
+            current_run.log_info(
+                f"Creating complete grid: {len(expected_periods)} periods × {len(all_expected_cocs)} COCs × "
+                f"{len(expected_org_units_list)} ORG_UNITs = {len(expected_periods) * len(all_expected_cocs) * len(expected_org_units_list)} combinations"
+            )
             
-            # Use periods and COCs from data, but expected DX_UIDs and ORG_UNITs from config
             # Create a complete grid of all expected combinations
             all_combinations = []
-            for period in periods_in_data:
-                for coc in cocs_in_data:
-                    for org_unit in expected_org_units:
+            for period in expected_periods:
+                for coc in all_expected_cocs:
+                    for org_unit in expected_org_units_list:
                         all_combinations.append({
                             "PERIOD": period,
                             "CATEGORY_OPTION_COMBO": coc,
@@ -346,18 +359,39 @@ def compute_exhaustivity(
                 on=["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"],
                 how="left"
             ).with_columns([
-                # Fill null values with 0 (form not submitted)
+                # Fill null values with 0 (form not submitted or missing)
                 pl.col("EXHAUSTIVITY_VALUE").fill_null(0)
             ])
             
             missing_count = len(complete_exhaustivity) - len(exhaustivity_df)
             if missing_count > 0:
+                # Analyze what's missing
+                missing_periods = set(expected_periods) - set(periods_in_data)
+                missing_cocs = set(all_expected_cocs) - set(cocs_in_data)
+                missing_org_units = set(expected_org_units_list) - set(exhaustivity_df["ORG_UNIT"].unique().to_list() if len(exhaustivity_df) > 0 else [])
+                
                 current_run.log_info(
                     f"Found {missing_count} missing (PERIOD, COC, ORG_UNIT) combinations. "
                     f"Marked as exhaustivity = 0 (form not submitted)."
                 )
+                if missing_periods:
+                    current_run.log_warning(f"Missing periods: {sorted(missing_periods)}")
+                if missing_cocs:
+                    current_run.log_warning(f"Missing COCs (no data): {sorted(missing_cocs)}")
+                if missing_org_units:
+                    current_run.log_warning(f"Missing ORG_UNITs: {sorted(missing_org_units)}")
             
             exhaustivity_df = complete_exhaustivity
+        elif expected_periods and not expected_org_units_list:
+            current_run.log_warning(
+                "Expected ORG_UNITs not provided, cannot create complete grid. "
+                "Only combinations with data will be included."
+            )
+        elif not expected_periods and expected_org_units_list:
+            current_run.log_warning(
+                "Expected periods not provided, cannot create complete grid. "
+                "Only combinations with data will be included."
+            )
         
         current_run.log_info(
             f"Exhaustivity computed for {len(exhaustivity_df)} combinations (PERIOD, COC, ORG_UNIT). "
