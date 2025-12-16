@@ -1,5 +1,4 @@
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import polars as pl
@@ -88,17 +87,7 @@ def compute_exhaustivity(
             )
         
         try:
-            # Read files in parallel for better performance
-            files_to_read_list = [f for f in files_to_read.values() if f is not None]
-            if files_to_read_list:
-                def read_parquet_file(file_path: Path) -> pl.DataFrame:
-                    return pl.read_parquet(file_path)
-                
-                with ThreadPoolExecutor(max_workers=min(len(files_to_read_list), 8)) as executor:
-                    dataframes = list(executor.map(read_parquet_file, files_to_read_list))
-                df = pl.concat(dataframes)
-            else:
-                df = pl.DataFrame()
+            df = pl.concat([pl.read_parquet(f) for f in files_to_read.values() if f is not None])
         except Exception as e:
             raise RuntimeError(f"Error reading parquet files for exhaustivity computation: {e!s}") from e
         
@@ -170,11 +159,11 @@ def compute_exhaustivity(
             .alias("VALUE_IS_NULL")
         ])
         
-        # Log raw values before aggregation (limited to avoid performance issues)
+        # Log raw values before aggregation
         current_run.log_info("=" * 80)
-        current_run.log_info("RAW VALUES BEFORE AGGREGATION (showing first 100 rows):")
+        current_run.log_info("RAW VALUES BEFORE AGGREGATION:")
         current_run.log_info("=" * 80)
-        df_raw = df.select(["PERIOD", "DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "VALUE", "VALUE_IS_NULL"]).sort(["PERIOD", "DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO"]).head(100)
+        df_raw = df.select(["PERIOD", "DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "VALUE", "VALUE_IS_NULL"]).sort(["PERIOD", "DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO"])
         for row in df_raw.iter_rows(named=True):
             value_str = str(row["VALUE"]) if row["VALUE"] is not None else "NULL"
             is_null_str = "NULL" if row["VALUE_IS_NULL"] else "OK"
@@ -182,8 +171,6 @@ def compute_exhaustivity(
                 f"PERIOD={row['PERIOD']} | DX_UID={row['DX_UID']} | ORG_UNIT={row['ORG_UNIT']} | "
                 f"COC={row['CATEGORY_OPTION_COMBO']} | VALUE={value_str} | IS_NULL={is_null_str}"
             )
-        if len(df) > 100:
-            current_run.log_info(f"... (showing first 100 of {len(df)} total rows)")
         current_run.log_info("=" * 80)
         
         # Determine expected DX_UIDs for each COC (all DX_UIDs that should appear with that COC)
@@ -191,13 +178,7 @@ def compute_exhaustivity(
         # Read ALL parquet files in the extracts folder to get complete DX_UID / COC list, not just the current periods
         all_available_files = list(extracts_folder.glob("data_*.parquet"))
         if all_available_files:
-            # Read files in parallel for better performance
-            def read_parquet_file(file_path: Path) -> pl.DataFrame:
-                return pl.read_parquet(file_path)
-            
-            with ThreadPoolExecutor(max_workers=min(len(all_available_files), 8)) as executor:
-                dataframes = list(executor.map(read_parquet_file, all_available_files))
-            df_all_periods = pl.concat(dataframes)
+            df_all_periods = pl.concat([pl.read_parquet(f) for f in all_available_files])
             # Apply same filters as df if extract_config_item is provided
             if extract_config_item:
                 org_units_filter = extract_config_item.get("ORG_UNITS")
@@ -260,127 +241,78 @@ def compute_exhaustivity(
         # Group by PERIOD, CATEGORY_OPTION_COMBO, and ORG_UNIT, check if all expected DX_UIDs are present and non-null
         # If any expected DX_UID is missing or null for a (PERIOD, COC, ORG_UNIT) combination, exhaustivity = 0
         # Otherwise exhaustivity = 1
-        
-        # OPTIMIZED: Use vectorized Polars operations instead of Python loops
-        # Step 1: Group by (PERIOD, COC, ORG_UNIT) and aggregate DX_UIDs and null flags
-        df_grouped = (
+        df_grouped_for_log = (
             df.group_by(["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"])
             .agg([
-                pl.col("DX_UID").unique().alias("DX_UIDs_PRESENT"),
-                pl.col("VALUE_IS_NULL").any().alias("HAS_NULL_VALUE"),
+                pl.col("DX_UID").alias("DX_UIDs"),
+                pl.col("VALUE").alias("VALUES"),
+                pl.col("VALUE_IS_NULL").alias("NULL_FLAGS"),
             ])
         )
         
-        # Step 2: Create a DataFrame with expected DX_UIDs per COC
-        expected_dx_uids_list = []
-        for coc, dx_uids in expected_dx_uids_by_coc.items():
-            for dx_uid in dx_uids:
-                expected_dx_uids_list.append({
-                    "CATEGORY_OPTION_COMBO": coc,
-                    "DX_UID_EXPECTED": dx_uid
-                })
-        expected_dx_uids_df = pl.DataFrame(expected_dx_uids_list) if expected_dx_uids_list else pl.DataFrame({
-            "CATEGORY_OPTION_COMBO": [],
-            "DX_UID_EXPECTED": []
-        })
-        
-        # Step 3: For each (PERIOD, COC, ORG_UNIT), verify all expected DX_UIDs are present and non-null
-        # Create all expected combinations and check which ones are present in data
-        if len(expected_dx_uids_df) > 0:
-            # Get unique periods and org units from data
-            periods_df = df.select("PERIOD").unique()
-            org_units_df = df.select("ORG_UNIT").unique()
+        # Check exhaustivity: all expected DX_UIDs must be present AND non-null
+        exhaustivity_rows = []
+        for row in df_grouped_for_log.iter_rows(named=True):
+            period = row["PERIOD"]
+            coc = row["CATEGORY_OPTION_COMBO"]
+            org_unit = row["ORG_UNIT"]
             
-            # Cross join to get all (PERIOD, COC, ORG_UNIT, DX_UID) combinations expected
-            expected_combinations = (
-                periods_df
-                .join(expected_dx_uids_df, how="cross")
-                .join(org_units_df, how="cross")
-            )
+            dx_uids_present = set(row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]])
+            values_list = row["VALUES"] if isinstance(row["VALUES"], list) else [row["VALUES"]]
+            null_flags_list = row["NULL_FLAGS"] if isinstance(row["NULL_FLAGS"], list) else [row["NULL_FLAGS"]]
             
-            # Join with actual data to see which expected combinations are present
-            # We need to check both presence and null status
-            df_with_dx_uid = df.select([
-                "PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "DX_UID", "VALUE_IS_NULL"
-            ]).rename({"DX_UID": "DX_UID_EXPECTED"})  # Rename to match expected_combinations
+            # Get expected DX_UIDs for this COC (global, across all periods)
+            expected_dx_uids = set(expected_dx_uids_by_coc.get(coc, []))
             
-            # Left join: expected combinations with actual data
-            expected_with_data = (
-                expected_combinations
-                .join(
-                    df_with_dx_uid,
-                    on=["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "DX_UID_EXPECTED"],
-                    how="left"
-                )
-                .with_columns([
-                    # Mark as missing if DX_UID not found, or as null if found but VALUE_IS_NULL is True
-                    pl.when(pl.col("VALUE_IS_NULL").is_null())
-                    .then(pl.lit(True))  # Missing DX_UID (no match in join)
-                    .when(pl.col("VALUE_IS_NULL") == True)
-                    .then(pl.lit(True))  # Present but null
-                    .otherwise(pl.lit(False))
-                    .alias("IS_MISSING_OR_NULL")
-                ])
-            )
+            # Check if all expected DX_UIDs are present
+            missing_dx_uids = expected_dx_uids - dx_uids_present
             
-            # Group by (PERIOD, COC, ORG_UNIT) and check if all expected DX_UIDs are present and non-null
-            exhaustivity_df = (
-                expected_with_data
-                .group_by(["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"])
-                .agg([
-                    pl.col("IS_MISSING_OR_NULL").any().alias("HAS_MISSING_OR_NULL")
-                ])
-                .with_columns([
-                    # Exhaustivity = 1 if no missing or null values, 0 otherwise
-                    (~pl.col("HAS_MISSING_OR_NULL")).cast(pl.Int64).alias("EXHAUSTIVITY_VALUE")
-                ])
-                .select([
-                    "PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"
-                ])
+            # Check if any present DX_UID has null value
+            has_null_value = any(null_flags_list) if null_flags_list else False
+            
+            # Exhaustivity = 0 if any expected DX_UID is missing OR any value is null
+            exhaustivity_value = 0 if (missing_dx_uids or has_null_value) else 1
+            
+            exhaustivity_rows.append({
+                "PERIOD": period,
+                "CATEGORY_OPTION_COMBO": coc,
+                "ORG_UNIT": org_unit,
+                "EXHAUSTIVITY_VALUE": exhaustivity_value,
+                "MISSING_DX_UIDs": list(missing_dx_uids),
+                "HAS_NULL_VALUE": has_null_value
+            })
+            
+            # Log aggregation details
+            current_run.log_info(
+                f"PERIOD={period} | COC={coc} | ORG_UNIT={org_unit}"
             )
-        else:
-            # If no expected DX_UIDs, just check for null values
-            exhaustivity_df = (
-                df_grouped
-                .with_columns([
-                    (~pl.col("HAS_NULL_VALUE")).cast(pl.Int64).alias("EXHAUSTIVITY_VALUE")
-                ])
-                .select([
-                    "PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"
-                ])
-            )
+            for i, (dx_uid, value, is_null) in enumerate(zip(
+                row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]],
+                values_list,
+                null_flags_list
+            )):
+                value_str = str(value) if value is not None else "NULL"
+                null_str = "NULL" if is_null else "OK"
+                current_run.log_info(f"  DX_UID[{i}]={dx_uid} | VALUE={value_str} | IS_NULL={null_str}")
+            if missing_dx_uids:
+                current_run.log_info(f"  -> MISSING_DX_UIDs={list(missing_dx_uids)}")
+            current_run.log_info(f"  -> HAS_NULL_VALUE={has_null_value} | SCORE={exhaustivity_value}")
+            current_run.log_info("-" * 80)
         
-        # Also include combinations that exist in data but not in expected (shouldn't happen, but handle gracefully)
-        data_only_combinations = (
-            df_grouped
-            .join(
-                exhaustivity_df.select(["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"]),
-                on=["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"],
-                how="anti"
-            )
-            .with_columns([
-                # If not in expected, exhaustivity = 0
-                pl.lit(0).alias("EXHAUSTIVITY_VALUE")
-            ])
-            .select([
-                "PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"
-            ])
-        )
+        # Create the final exhaustivity dataframe
+        exhaustivity_df = pl.DataFrame(exhaustivity_rows).select([
+            "PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"
+        ])
         
-        if len(data_only_combinations) > 0:
-            exhaustivity_df = pl.concat([exhaustivity_df, data_only_combinations])
-        
-        # Log final scores (limited to avoid performance issues)
+        # Log final scores
         current_run.log_info("=" * 80)
-        current_run.log_info(f"FINAL EXHAUSTIVITY SCORES (showing first 100 of {len(exhaustivity_df)} combinations):")
+        current_run.log_info("FINAL EXHAUSTIVITY SCORES:")
         current_run.log_info("=" * 80)
-        for row in exhaustivity_df.head(100).iter_rows(named=True):
+        for row in exhaustivity_df.iter_rows(named=True):
             current_run.log_info(
                 f"PERIOD={row['PERIOD']} | COC={row['CATEGORY_OPTION_COMBO']} | ORG_UNIT={row['ORG_UNIT']} | "
                 f"EXHAUSTIVITY_VALUE={row['EXHAUSTIVITY_VALUE']}"
             )
-        if len(exhaustivity_df) > 100:
-            current_run.log_info(f"... (showing first 100 of {len(exhaustivity_df)} total combinations)")
         current_run.log_info("=" * 80)
         
         # If expected DX_UIDs and ORG_UNITs are provided, create a complete grid
@@ -392,18 +324,20 @@ def compute_exhaustivity(
             cocs_in_data = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list()
             org_units_in_data = exhaustivity_df["ORG_UNIT"].unique().to_list()
             
-            # OPTIMIZED: Use Polars cross join instead of Python loops
+            # Use periods and COCs from data, but expected DX_UIDs and ORG_UNITs from config
             # Create a complete grid of all expected combinations
-            periods_df = pl.DataFrame({"PERIOD": periods_in_data})
-            cocs_df = pl.DataFrame({"CATEGORY_OPTION_COMBO": cocs_in_data})
-            org_units_df = pl.DataFrame({"ORG_UNIT": expected_org_units})
+            all_combinations = []
+            for period in periods_in_data:
+                for coc in cocs_in_data:
+                    for org_unit in expected_org_units:
+                        all_combinations.append({
+                            "PERIOD": period,
+                            "CATEGORY_OPTION_COMBO": coc,
+                            "ORG_UNIT": org_unit
+                        })
             
-            # Create DataFrame with all expected combinations using cross joins
-            expected_df = (
-                periods_df
-                .join(cocs_df, how="cross")
-                .join(org_units_df, how="cross")
-            )
+            # Create DataFrame with all expected combinations
+            expected_df = pl.DataFrame(all_combinations)
             
             # Left join with computed exhaustivity
             # Missing combinations will have null EXHAUSTIVITY_VALUE
