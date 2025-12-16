@@ -66,7 +66,7 @@ def compute_exhaustivity(
                     break
             # Fallback to old structure if not found
             if extracts_folder is None or not extracts_folder.exists():
-                extracts_folder = pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}"
+    extracts_folder = pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}"
     
     try:
         current_run.log_info(f"Computing exhaustivity for extract: {extract_id}")
@@ -159,19 +159,10 @@ def compute_exhaustivity(
             .alias("VALUE_IS_NULL")
         ])
         
-        # Log raw values before aggregation
-        current_run.log_info("=" * 80)
-        current_run.log_info("RAW VALUES BEFORE AGGREGATION:")
-        current_run.log_info("=" * 80)
-        df_raw = df.select(["PERIOD", "DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "VALUE", "VALUE_IS_NULL"]).sort(["PERIOD", "DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO"])
-        for row in df_raw.iter_rows(named=True):
-            value_str = str(row["VALUE"]) if row["VALUE"] is not None else "NULL"
-            is_null_str = "NULL" if row["VALUE_IS_NULL"] else "OK"
-            current_run.log_info(
-                f"PERIOD={row['PERIOD']} | DX_UID={row['DX_UID']} | ORG_UNIT={row['ORG_UNIT']} | "
-                f"COC={row['CATEGORY_OPTION_COMBO']} | VALUE={value_str} | IS_NULL={is_null_str}"
-            )
-        current_run.log_info("=" * 80)
+        # Log start of aggregation step
+        current_run.log_info("Starting exhaustivity computation aggregation...")
+        df_raw = df.select(["PERIOD", "DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "VALUE", "VALUE_IS_NULL"])
+        current_run.log_info(f"Processing {len(df_raw)} data rows for exhaustivity computation.")
         
         # Determine expected DX_UIDs for each COC (all DX_UIDs that should appear with that COC)
         # Prefer using push_config mappings (source of truth), and fall back to data if not available.
@@ -235,7 +226,7 @@ def compute_exhaustivity(
                 coc_data = df_all_periods.filter(pl.col("CATEGORY_OPTION_COMBO") == coc)
                 expected_dx_uids_by_coc[coc] = sorted(coc_data["DX_UID"].unique().to_list())
             current_run.log_info(
-                f"Expected DX_UIDs per COC derived from data (no push_config mapping): {expected_dx_uids_by_coc}"
+                f"Expected DX_UIDs per COC derived from data (no push_config mapping): {len(expected_dx_uids_by_coc)} COCs"
             )
         
         # Group by PERIOD, CATEGORY_OPTION_COMBO, and ORG_UNIT, check if all expected DX_UIDs are present and non-null
@@ -282,38 +273,21 @@ def compute_exhaustivity(
                 "HAS_NULL_VALUE": has_null_value
             })
             
-            # Log aggregation details
-            current_run.log_info(
-                f"PERIOD={period} | COC={coc} | ORG_UNIT={org_unit}"
-            )
-            for i, (dx_uid, value, is_null) in enumerate(zip(
-                row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]],
-                values_list,
-                null_flags_list
-            )):
-                value_str = str(value) if value is not None else "NULL"
-                null_str = "NULL" if is_null else "OK"
-                current_run.log_info(f"  DX_UID[{i}]={dx_uid} | VALUE={value_str} | IS_NULL={null_str}")
-            if missing_dx_uids:
-                current_run.log_info(f"  -> MISSING_DX_UIDs={list(missing_dx_uids)}")
-            current_run.log_info(f"  -> HAS_NULL_VALUE={has_null_value} | SCORE={exhaustivity_value}")
-            current_run.log_info("-" * 80)
+            # No detailed logging per row to avoid API overload
         
         # Create the final exhaustivity dataframe
         exhaustivity_df = pl.DataFrame(exhaustivity_rows).select([
             "PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"
         ])
         
-        # Log final scores
-        current_run.log_info("=" * 80)
-        current_run.log_info("FINAL EXHAUSTIVITY SCORES:")
-        current_run.log_info("=" * 80)
-        for row in exhaustivity_df.iter_rows(named=True):
-            current_run.log_info(
-                f"PERIOD={row['PERIOD']} | COC={row['CATEGORY_OPTION_COMBO']} | ORG_UNIT={row['ORG_UNIT']} | "
-                f"EXHAUSTIVITY_VALUE={row['EXHAUSTIVITY_VALUE']}"
-            )
-        current_run.log_info("=" * 80)
+        # Log summary only (no detailed rows to avoid API overload)
+        total_combinations = len(exhaustivity_df)
+        complete_count = exhaustivity_df["EXHAUSTIVITY_VALUE"].sum()
+        incomplete_count = total_combinations - complete_count
+        current_run.log_info(
+            f"Exhaustivity computation completed: {total_combinations} combinations "
+            f"({complete_count} complete, {incomplete_count} incomplete)"
+        )
         
         # Create a complete grid using push_config mappings and expected periods/org_units
         # This ensures we detect missing COCs, periods, and ORG_UNITs
@@ -326,7 +300,7 @@ def compute_exhaustivity(
         if cocs_in_data:
             all_expected_cocs.update(cocs_in_data)
         all_expected_cocs = sorted(list(all_expected_cocs))
-        
+            
         # Use expected periods (from periods parameter) and expected ORG_UNITs
         expected_periods = periods if periods else periods_in_data
         expected_org_units_list = expected_org_units if expected_org_units else []
@@ -375,11 +349,11 @@ def compute_exhaustivity(
                     f"Marked as exhaustivity = 0 (form not submitted)."
                 )
                 if missing_periods:
-                    current_run.log_warning(f"Missing periods: {sorted(missing_periods)}")
+                    current_run.log_warning(f"Missing {len(missing_periods)} periods")
                 if missing_cocs:
-                    current_run.log_warning(f"Missing COCs (no data): {sorted(missing_cocs)}")
+                    current_run.log_warning(f"Missing {len(missing_cocs)} COCs (no data)")
                 if missing_org_units:
-                    current_run.log_warning(f"Missing ORG_UNITs: {sorted(missing_org_units)}")
+                    current_run.log_warning(f"Missing {len(missing_org_units)} ORG_UNITs")
             
             exhaustivity_df = complete_exhaustivity
         elif expected_periods and not expected_org_units_list:
@@ -425,10 +399,10 @@ def compute_exhaustivity(
             # Use all DX_UIDs from config if available, otherwise use only those with data
             if extract_config_item and extract_config_item.get("UIDS"):
                 dx_uids = sorted(extract_config_item.get("UIDS", []))
-                current_run.log_info(f"Using all DX_UIDs from config: {dx_uids}")
+                current_run.log_info(f"Using {len(dx_uids)} DX_UIDs from config")
             else:
                 dx_uids = sorted(df["DX_UID"].unique().to_list())
-                current_run.log_info(f"Using DX_UIDs from data only: {dx_uids}")
+                current_run.log_info(f"Using {len(dx_uids)} DX_UIDs from data")
             
             # Get all COCs that appear in the data (global across all available data)
             all_cocs = (
@@ -470,7 +444,7 @@ def compute_exhaustivity(
                 }
                 if expected_dx_uids_by_coc:
                     current_run.log_info(
-                        f"[summary] Expected DX_UIDs per COC loaded from push_config: {expected_dx_uids_by_coc}"
+                        f"[summary] Expected DX_UIDs per COC loaded from push_config: {len(expected_dx_uids_by_coc)} COCs"
                     )
             except Exception as e:
                 current_run.log_warning(

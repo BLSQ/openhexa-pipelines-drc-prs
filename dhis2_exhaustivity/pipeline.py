@@ -123,7 +123,7 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_push_data:
                 pipeline_path=dataset_sync_path,
                 run_task=True,
                 wait=True,
-            )
+        )
 
     except Exception as e:
         current_run.log_error(f"An error occurred: {e}")
@@ -418,30 +418,30 @@ def compute_exhaustivity_and_queue(
                         break
                 
                 # Get expected org units and COCs from other periods' data
-                expected_org_units = None
+                    expected_org_units = None
                 expected_cocs = None
-                try:
+                    try:
                     # Read all parquet files to get all org units and COCs
-                    all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                    if all_period_files:
-                        all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
-                        expected_org_units = all_data["ORG_UNIT"].unique().to_list()
+                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                        if all_period_files:
+                            all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                            expected_org_units = all_data["ORG_UNIT"].unique().to_list()
                         expected_cocs = all_data["CATEGORY_OPTION_COMBO"].unique().to_list()
-                except Exception as e:
+                    except Exception as e:
                     current_run.log_warning(f"Could not determine expected org units and COCs: {e}")
-                
+                    
                 if expected_org_units and expected_cocs:
                     # Create a complete grid of (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT) with exhaustivity = 0
-                    all_combinations = []
+                        all_combinations = []
                     for coc in expected_cocs:
-                        for org_unit in expected_org_units:
-                            all_combinations.append({
-                                "PERIOD": period,
+                            for org_unit in expected_org_units:
+                                all_combinations.append({
+                                    "PERIOD": period,
                                 "CATEGORY_OPTION_COMBO": coc,
-                                "ORG_UNIT": org_unit,
-                                "EXHAUSTIVITY_VALUE": 0,
-                            })
-                    
+                                    "ORG_UNIT": org_unit,
+                                    "EXHAUSTIVITY_VALUE": 0,
+                                })
+                        
                         missing_data_df = pl.DataFrame(all_combinations)
                         
                         # Format for DHIS2 import
@@ -460,25 +460,25 @@ def compute_exhaustivity_and_queue(
                             extract_id=extract_id,
                             extract_config_item=extract_config_item,
                         )
-                    
-                    try:
-                        save_to_parquet(
-                            data=df_final,
-                            filename=output_dir / f"exhaustivity_{period}.parquet",
-                        )
-                        push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
-                        current_run.log_info(
+                        
+                        try:
+                            save_to_parquet(
+                                data=df_final,
+                                filename=output_dir / f"exhaustivity_{period}.parquet",
+                            )
+                            push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
+                            current_run.log_info(
                             f"Created exhaustivity entries with value 0 for {len(expected_cocs)} COCs "
-                            f"and {len(expected_org_units)} ORG_UNITs ({len(all_combinations)} combinations, no data for period {period})"
-                        )
-                    except Exception as e:
-                        logging.error(f"Exhaustivity saving error: {e!s}")
-                        current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
-                else:
-                    current_run.log_warning(
+                                f"and {len(expected_org_units)} ORG_UNITs ({len(all_combinations)} combinations, no data for period {period})"
+                            )
+                        except Exception as e:
+                            logging.error(f"Exhaustivity saving error: {e!s}")
+                            current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
+                    else:
+                        current_run.log_warning(
                         f"No org units or COCs found from other periods for extract {extract_id}, "
-                        f"cannot create exhaustivity entries for period {period}"
-                    )
+                            f"cannot create exhaustivity entries for period {period}"
+                        )
                 continue
 
             # Get expected DX_UIDs and ORG_UNITs from extract configuration
@@ -507,19 +507,19 @@ def compute_exhaustivity_and_queue(
                     )
                 else:
                     # Fallback: get from extracted data
-                    try:
-                        # Read all parquet files to get all org units
-                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                        if all_period_files:
-                            all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
-                            expected_org_units = all_data["ORG_UNIT"].unique().to_list()
+                try:
+                    # Read all parquet files to get all org units
+                    all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                    if all_period_files:
+                        all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                        expected_org_units = all_data["ORG_UNIT"].unique().to_list()
                             current_run.log_info(
                                 f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
                                 f"(no ORG_UNITS in extract_config)"
                             )
-                    except Exception as e:
-                        current_run.log_warning(f"Could not determine expected org units: {e}")
-                        expected_org_units = None
+                except Exception as e:
+                    current_run.log_warning(f"Could not determine expected org units: {e}")
+                    expected_org_units = None
             
             # Compute exhaustivity values for ALL periods (not just current period)
             # This ensures we detect missing periods
@@ -619,16 +619,9 @@ def format_for_exhaustivity_import(
             # even if they don't have data in original_data (they should still get exhaustivity=0 entries)
             if extract_config_item and extract_config_item.get("UIDS"):
                 relevant_dx_uids = set(extract_config_item.get("UIDS", []))
-                current_run.log_info(
-                    f"format_for_exhaustivity_import: Filtering push_config mappings to {len(relevant_dx_uids)} "
-                    f"DX_UIDs from extract_config"
-                )
             else:
                 # If no extract_config_item, use all DX_UIDs from push_config
                 relevant_dx_uids = None
-                current_run.log_info(
-                    "format_for_exhaustivity_import: No extract_config_item provided, using all DX_UIDs from push_config"
-                )
 
             expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
             for dx_uid, mapping in push_mappings.items():
@@ -646,11 +639,10 @@ def format_for_exhaustivity_import(
             expected_dx_uids_by_coc = {
                 coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
             }
+            # Log summary only (no detailed info to avoid API overload)
             if expected_dx_uids_by_coc:
                 current_run.log_info(
-                    f"Loaded expected DX_UIDs per COC from push_config for format_for_exhaustivity_import: "
-                    f"{len(expected_dx_uids_by_coc)} COCs, "
-                    f"total DX_UIDs: {sum(len(uids) for uids in expected_dx_uids_by_coc.values())}"
+                    f"Loaded push_config mappings: {len(expected_dx_uids_by_coc)} COCs"
                 )
         except Exception as e:
             current_run.log_warning(f"Could not load expected DX_UIDs per COC from push_config: {e!s}")
@@ -691,18 +683,12 @@ def format_for_exhaustivity_import(
     
     # Expand exhaustivity_df: for each (PERIOD, COC, ORG_UNIT, EXHAUSTIVITY_VALUE),
     # create entries for all expected DX_UIDs for that COC
+    current_run.log_info(
+        f"Formatting exhaustivity data for import: {len(exhaustivity_df)} entries, "
+        f"{len(expected_dx_uids_by_coc)} COCs with mappings"
+    )
     expanded_rows = []
     cocs_in_exhaustivity = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list()
-    current_run.log_info(
-        f"format_for_exhaustivity_import: Processing {len(exhaustivity_df)} exhaustivity entries "
-        f"for {len(cocs_in_exhaustivity)} COCs"
-    )
-    # Log expected DX_UIDs for first few COCs for debugging
-    for coc in cocs_in_exhaustivity[:3]:
-        dx_uids = expected_dx_uids_by_coc.get(coc, [])
-        current_run.log_info(
-            f"format_for_exhaustivity_import: COC {coc} has {len(dx_uids)} expected DX_UIDs: {sorted(dx_uids)[:5]}..."
-        )
     for row in exhaustivity_df.iter_rows(named=True):
         period = row["PERIOD"]
         coc = row["CATEGORY_OPTION_COMBO"]
@@ -727,7 +713,7 @@ def format_for_exhaustivity_import(
                 format_for_exhaustivity_import._warned_cocs.add(coc)
                 current_run.log_warning(
                     f"format_for_exhaustivity_import: No expected DX_UIDs found for COC {coc} "
-                    f"in push_config mapping. Available COCs: {list(expected_dx_uids_by_coc.keys())[:5]}..."
+                    f"in push_config mapping ({len(expected_dx_uids_by_coc)} COCs available)"
                 )
     
     if not expanded_rows:
