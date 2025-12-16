@@ -877,11 +877,12 @@ def push_dataset_org_units(
 def push_data(
     pipeline_path: Path,
     run_task: bool = True,
+    wait: bool = True,
 ):
     """Pushes data elements to the target DHIS2 instance."""
     if not run_task:
         current_run.log_info("Data push task skipped.")
-        return
+        return True
 
     current_run.log_info("Starting data push.")
 
@@ -973,6 +974,7 @@ def push_data(
             raise  # crash on error
 
     current_run.log_info("Data push task finished.")
+    return True
 
 
 def split_on_pipe(s: str) -> tuple[str, str | None]:
