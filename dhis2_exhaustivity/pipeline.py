@@ -258,13 +258,9 @@ def handle_data_element_extracts(
             f"(dataset: {dataset_name})."
         )
 
-        # Create folder name based on org units level or extract type
+        # Create folder name based on org units level from config
         if org_units_level is not None:
             folder_name = f"Extract lvl {org_units_level}"
-        elif "Fosa" in extract_id:
-            folder_name = "Extract lvl 5"
-        elif "BCZ" in extract_id:
-            folder_name = "Extract lvl 3"
         else:
             folder_name = f"Extract {extract_id}"
 
@@ -391,25 +387,16 @@ def compute_exhaustivity_and_queue(
             extract_config_item = extract_item
             break
     
-    # Create folder name based on org units level or extract type
+    # Create folder name based on org units level from config
     if extract_config_item:
         org_units_level = extract_config_item.get("ORG_UNITS_LEVEL")
         if org_units_level is not None:
             folder_name = f"Extract lvl {org_units_level}"
-        elif "Fosa" in extract_id:
-            folder_name = "Extract lvl 5"
-        elif "BCZ" in extract_id:
-            folder_name = "Extract lvl 3"
         else:
             folder_name = f"Extract {extract_id}"
     else:
-        # Fallback to extract_id if config not found
-        if "Fosa" in extract_id:
-            folder_name = "Extract lvl 5"
-        elif "BCZ" in extract_id:
-            folder_name = "Extract lvl 3"
-        else:
-            folder_name = f"Extract {extract_id}"
+        # Fallback: use extract_id if config not found
+        folder_name = f"Extract {extract_id}"
     
     extracts_folder = pipeline_path / "data" / "extracts" / folder_name
     output_dir = pipeline_path / "data" / "processed" / folder_name
@@ -550,9 +537,26 @@ def format_for_exhaustivity_import(
             from utils import load_configuration
             push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
             push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+            
+            # Find the matching extract in push_config
+            matching_push_extract = next(
+                (e for e in push_extracts if e.get("EXTRACT_UID") == extract_id),
+                None
+            )
+            
+            # If we found a matching extract, use its mappings
+            # Otherwise, use all mappings from all extracts (fallback)
             push_mappings: dict[str, dict] = {}
-            for push_extract in push_extracts:
-                push_mappings.update(push_extract.get("MAPPINGS", {}))
+            if matching_push_extract:
+                push_mappings = matching_push_extract.get("MAPPINGS", {})
+                if push_mappings:
+                    current_run.log_info(f"Using mappings from push_config extract: {matching_push_extract.get('EXTRACT_UID')}")
+            else:
+                # Fallback: use all mappings from all extracts
+                for push_extract in push_extracts:
+                    push_mappings.update(push_extract.get("MAPPINGS", {}))
+                if push_mappings:
+                    current_run.log_warning(f"Extract {extract_id} not found in push_config, using all mappings as fallback")
 
             # Limit to DX_UIDs that are relevant for this extract (from extract_config, not from original_data)
             # We want to include ALL DX_UIDs from push_config that are in the extract config,
@@ -730,24 +734,14 @@ def update_dataset_org_units(
             target_ds = extract.get("TARGET_DATASET_UID")
             extract_id = extract.get("EXTRACT_UID", "unknown")
             
-            # For exhaustivity extracts, we only need TARGET_DATASET_UID (no source dataset sync needed)
-            # For regular extracts, we need both SOURCE_DATASET_UID and TARGET_DATASET_UID
-            if target_ds:
-                if "exhaustivity" in extract_id.lower():
-                    # Exhaustivity extracts: use the target dataset directly (no source to copy from)
-                    # We still add it to the list but with source=None to indicate it's an exhaustivity dataset
-                    dataset_mappings.append({
-                        "source": None,  # No source dataset for exhaustivity
-                        "target": target_ds,
-                        "extract_id": extract_id
-                    })
-                elif source_ds:
-                    # Regular extracts: copy org units from source to target
-                    dataset_mappings.append({
-                        "source": source_ds,
-                        "target": target_ds,
-                        "extract_id": extract_id
-                    })
+            # For all extracts (regular and exhaustivity), we need both SOURCE_DATASET_UID and TARGET_DATASET_UID
+            # to sync org units from source dataset to target dataset (both in the same DHIS2 instance)
+            if target_ds and source_ds:
+                dataset_mappings.append({
+                    "source": source_ds,
+                    "target": target_ds,
+                    "extract_id": extract_id
+                })
 
         if not dataset_mappings:
             current_run.log_warning("No dataset mappings found. Skipping dataset org units sync.")
@@ -756,16 +750,8 @@ def update_dataset_org_units(
         current_run.log_info(f"Found {len(dataset_mappings)} dataset mapping(s) to sync.")
         
         # Sync each dataset mapping
+        # Copy org units from source dataset to target dataset (both in the same DHIS2 instance)
         for mapping in dataset_mappings:
-            # Skip exhaustivity extracts that don't have a source dataset
-            # (they will be handled separately if needed)
-            if mapping["source"] is None:
-                current_run.log_info(
-                    f"Skipping org units sync for exhaustivity extract '{mapping['extract_id']}': "
-                    f"no source dataset specified (target: {mapping['target']})"
-                )
-                continue
-                
             current_run.log_info(
                 f"Syncing org units for '{mapping['extract_id']}': "
                 f"{mapping['source']} -> {mapping['target']}"
@@ -910,12 +896,39 @@ def push_data(
             continue
 
         try:
-            # Read extract
-            extract_id, extract_file_path = split_on_pipe(next_period)
+            # Read file path from queue
+            _, extract_file_path = split_on_pipe(next_period)
             extract_path = Path(extract_file_path)
             # Read with polars
             extract_data = pl.read_parquet(extract_path)
             short_path = f"{extract_path.parent.name}/{extract_path.name}"
+            
+            # Determine extract_id from file path (ignore extract_id from queue)
+            # Match folder name pattern "Extract lvl X" with ORG_UNITS_LEVEL in extract_config
+            extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+            extracts_list = extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+            parent_folder = extract_path.parent.name
+            
+            # Extract level from folder name and find matching extract
+            extract_id = None
+            if "lvl" in parent_folder.lower():
+                try:
+                    level_from_folder = int(parent_folder.split("lvl")[-1].strip().split()[0])
+                    # Find extract with matching ORG_UNITS_LEVEL
+                    matching_extract = next(
+                        (e for e in extracts_list
+                         if e.get("ORG_UNITS_LEVEL") == level_from_folder),
+                        None
+                    )
+                    if matching_extract:
+                        extract_id = matching_extract.get("EXTRACT_UID")
+                except (ValueError, IndexError):
+                    pass
+            
+            if not extract_id:
+                current_run.log_error(f"Could not determine extract_id from folder path: {parent_folder}. Skipping.")
+                push_queue.dequeue()
+                continue
         except Exception as e:
             current_run.log_error(f"Failed to read extract from queue item: {next_period}. Error: {e}")
             push_queue.dequeue()  # remove problematic item
@@ -933,26 +946,16 @@ def push_data(
                 exhaustivity_df_pl = extract_data
                 
                 # Load extract config to get expected DX_UIDs
-                # load_configuration is imported at module level
-                extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+                # extract_config_full already loaded above, reuse it
                 extract_config_item = next(
-                    (e for e in extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", []) 
-                     if e.get("EXTRACT_UID") == extract_id), 
+                    (e for e in extracts_list if e.get("EXTRACT_UID") == extract_id),
                     None
                 )
                 
                 # Read original data if available (for fallback)
+                # Use the same folder structure as the exhaustivity file
                 original_data = None
-                extracts_folder = pipeline_path / "data" / "extracts"
-                if "Fosa" in extract_id:
-                    extracts_folder = extracts_folder / "Extract lvl 5"
-                elif "BCZ" in extract_id:
-                    extracts_folder = extracts_folder / "Extract lvl 3"
-                else:
-                    for folder in extracts_folder.iterdir():
-                        if folder.is_dir() and extract_id in folder.name:
-                            extracts_folder = folder
-                            break
+                extracts_folder = extract_path.parent.parent / "extracts" / parent_folder
                 
                 # Try to read original data from the same period
                 period = exhaustivity_df_pl["PERIOD"].unique().to_list()[0] if len(exhaustivity_df_pl) > 0 else None
@@ -974,8 +977,13 @@ def push_data(
                 )
                 
                 # Apply mapping and push data
+                # Use the extract_id we determined (should match push_config now)
                 cfg_list, mapper_func = dispatch_map["DATA_ELEMENT"]
                 extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
+                
+                if not extract_config:
+                    current_run.log_warning(f"Extract config not found in push_config for {extract_id}, pushing without mappings")
+                
                 df_mapped = mapper_func(df=df_final, extract_config=extract_config)
                 pusher.push_data(df_data=df_mapped)
             

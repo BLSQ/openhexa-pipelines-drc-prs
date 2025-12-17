@@ -3,13 +3,13 @@
         "TARGET_DHIS2_CONNECTION": "drc-prs",
         "IMPORT_STRATEGY": "CREATE_AND_UPDATE",
         "DRY_RUN": true,
-        "MAX_POST": 2000,
-        "PUSH_WAIT_MINUTES": 5
+		"MAX_POST": 2000,
+		"PUSH_WAIT_MINUTES": 5
     },
     "ORG_UNITS": {},
     "DATA_ELEMENTS": {
         "EXTRACTS": [
-            {
+            {              
                 "EXTRACT_UID": "level_zs",
                 "SOURCE_DATASET_UID": null,
                 "TARGET_DATASET_UID": null,
@@ -17,7 +17,7 @@
                     "PMuB7JCsLsg": {
                         "UID": "MFcy5dErsKR",
                         "CATEGORY_OPTION_COMBO": {
-                            "pGSfKOKL9s0": "lZGBsOl4hOS"
+                            "pGSfKOKL9s0": "lZGBsOl4hOS"                                                       
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
@@ -88,7 +88,7 @@
                     },
                     "OYVsvv6fCja": {
                         "UID": "dreVtvRayev",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
@@ -119,7 +119,7 @@
                     },
                     "FVJ2v5RgBgL": {
                         "UID": "DCJfRc1TpAR",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -136,14 +136,14 @@
                     },
                     "OUSS5mSrz1x": {
                         "UID": "r8OFvnKvD27",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "c5nKAODeM8D": {
                         "UID": "qps2qV8Nk8a",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -160,14 +160,14 @@
                     },
                     "zeqeboHpEb2": {
                         "UID": "Qa1IAZbh7DD",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "a0i3MXpBmhT": {
                         "UID": "pn2lSDlGU8S",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -184,14 +184,14 @@
                     },
                     "Iz0aHMkdkQL": {
                         "UID": "pNeg6QS6VUA",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "b0f8cOW1CFV": {
                         "UID": "liobbb5SRzR",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -208,14 +208,14 @@
                     },
                     "jokGP7OGiZ5": {
                         "UID": "SqGR1jQAA83",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "Xt48UQAZppa": {
                         "UID": "QxeCkZVPmZ4",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -232,14 +232,14 @@
                     },
                     "dZNy8p5cZKT": {
                         "UID": "lolDxZ0bdJF",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "ccpDQ5umc0a": {
                         "UID": "krGXf8iXGUw",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -256,14 +256,14 @@
                     },
                     "BuNHpvE2fEr": {
                         "UID": "fCIOudKy6LP",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "jlRZE5tTARe": {
                         "UID": "hZ0CgqXx3cP",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -280,14 +280,14 @@
                     },
                     "RPE8N0UZpdg": {
                         "UID": "s1MmwpwLWa3",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "bdy45DCTJLB": {
                         "UID": "tIeOHye5rzh",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -304,14 +304,14 @@
                     },
                     "lKvN4sxgsIL": {
                         "UID": "rL1IK7miYJh",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "PLjvTAvttMR": {
                         "UID": "PXSRmMNZnpM",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -328,14 +328,14 @@
                     },
                     "BVzmrRaTfcT": {
                         "UID": "Mx0jQkokP5Q",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "S007ecRnpvZ": {
                         "UID": "b5mg2cVtm48",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -352,14 +352,14 @@
                     },
                     "uW5PSD9hNBr": {
                         "UID": "hrJZyUvxr2S",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "EwiHKw8P2xz": {
                         "UID": "H77RuaEGD17",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -376,14 +376,14 @@
                     },
                     "pbkiXu6bxQm": {
                         "UID": "tDLeslflyjT",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "cbuwM5uOq3O": {
                         "UID": "WH4cMQHfCT8",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -400,14 +400,14 @@
                     },
                     "UAuoPAiQ1tG": {
                         "UID": "j0TxNEeqLrA",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "PlYGakAhqbk": {
                         "UID": "zuCnFYZizYX",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -424,7 +424,7 @@
                     },
                     "vQQ4gYZ4ccT": {
                         "UID": "ck0Ia0oPnd3",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
@@ -448,14 +448,14 @@
                     },
                     "doMlZ2uA9kF": {
                         "UID": "OO4n4Nl0nhq",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "pGSfKOKL9s0": "lZGBsOl4hOS"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
                     },
                     "vtqAD1gqMxx": {
                         "UID": "f2Pr76MxXTD",
-                        "CATEGORY_OPTION_COMBO": {
+                        "CATEGORY_OPTION_COMBO": { 
                             "ddJmZUacsvQ": "V4iH1vkrmWf",
                             "WZwmzIuRvwV": "q8NaeXeGd3g",
                             "t5L9ODSuYOG": "aTMlfYTWKst",
@@ -472,7 +472,7 @@
                     }
                 }
             },
-            {
+            {              
                 "EXTRACT_UID": "level_fosa",
                 "SOURCE_DATASET_UID": "DxDuYrrZSa7",
                 "TARGET_DATASET_UID": "wMCnDAQfGZN",
@@ -1029,7 +1029,7 @@
                             "r5lWfJh2t2l": "brxxCYkQqcd"
                         },
                         "ATTRIBUTE_OPTION_COMBO": {}
-                    },
+                    },    
                     "jrtkdRjvNKv": {
                         "UID": "jrtkdRjvNKv",
                         "CATEGORY_OPTION_COMBO": {
@@ -1091,8 +1091,8 @@
             },
             {
                 "EXTRACT_UID": "Fosa_exhaustivity_data_elements",
-                "SOURCE_DATASET_UID": null,
-                "TARGET_DATASET_UID": "kaxgZZLAwGf",
+                "SOURCE_DATASET_UID": "wMCnDAQfGZN",
+                "TARGET_DATASET_UID": "z774dF9QToi",
                 "MAPPINGS": {
                     "eKHjiGzfBep": {
                         "UID": "eKHjiGzfBep",
@@ -1554,14 +1554,14 @@
             },
             {
                 "EXTRACT_UID": "BCZ_exhaustivity_data_elements",
-                "SOURCE_DATASET_UID": null,
-                "TARGET_DATASET_UID": "tRMSUzNvN8e",
+                "SOURCE_DATASET_UID": "Om2WgL4TNEy",
+                "TARGET_DATASET_UID": "xrNLUayA875",
                 "MAPPINGS": {}
             }
         ]
     },
     "REPORTING_RATES": {
-        "EXTRACTS": []
+        "EXTRACTS": []        
     },
     "INDICATORS": {
         "EXTRACTS": []

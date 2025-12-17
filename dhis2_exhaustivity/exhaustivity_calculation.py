@@ -310,6 +310,8 @@ def compute_exhaustivity(
             for dx_uid, mapping in push_mappings.items():
                 if dx_uid not in relevant_dx_uids:
                     continue
+                # Get target UID (mapped UID), fallback to source UID if no mapping
+                target_uid = mapping.get("UID", dx_uid)
                 coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
                 for _src_coc, target_coc in coc_map.items():
                     if target_coc is None:
@@ -317,7 +319,8 @@ def compute_exhaustivity(
                     coc_id = str(target_coc).strip()
                     if not coc_id:
                         continue
-                    expected_dx_uids_by_coc_sets.setdefault(coc_id, set()).add(dx_uid)
+                    # Use target UID (after mapping) instead of source UID
+                    expected_dx_uids_by_coc_sets.setdefault(coc_id, set()).add(target_uid)
 
             expected_dx_uids_by_coc = {
                 coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
@@ -503,6 +506,82 @@ def compute_exhaustivity(
             f"Values: {exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()} complete, "
             f"{len(exhaustivity_df) - exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()} incomplete."
         )
+        
+        # Generate summary.txt for monitoring
+        # Determine output directory based on extracts_folder structure
+        if "extracts" in str(extracts_folder):
+            # extracts_folder is like: pipeline_path/data/extracts/Extract lvl X
+            # summary should be in: pipeline_path/data/processed/Extract lvl X/summary.txt
+            summary_path = extracts_folder.parent.parent / "processed" / extracts_folder.name / "summary.txt"
+        else:
+            # Fallback: use pipeline_path if available
+            summary_path = pipeline_path / "data" / "processed" / "summary.txt"
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"EXHAUSTIVITY SUMMARY - {extract_id}\n")
+                f.write(f"Computed at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"{'='*80}\n\n")
+                f.write(f"Periods processed: {periods}\n")
+                f.write(f"Total combinations: {len(exhaustivity_df)}\n")
+                f.write(f"Complete (exhaustivity=1): {exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()}\n")
+                f.write(f"Incomplete (exhaustivity=0): {len(exhaustivity_df) - exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()}\n\n")
+                
+                if expected_dx_uids_by_coc:
+                    f.write(f"Expected DX_UIDs per COC (from push_config): {len(expected_dx_uids_by_coc)} COCs\n")
+                else:
+                    f.write(f"Expected DX_UIDs per COC (from data): {len(exhaustivity_df['CATEGORY_OPTION_COMBO'].unique())} COCs\n")
+                
+                if expected_org_units:
+                    f.write(f"Expected ORG_UNITs: {len(expected_org_units)}\n")
+                else:
+                    f.write(f"ORG_UNITs in data: {exhaustivity_df['ORG_UNIT'].n_unique()}\n")
+                
+                f.write(f"\nBreakdown by period:\n")
+                for period in sorted(exhaustivity_df["PERIOD"].unique().to_list()):
+                    period_df = exhaustivity_df.filter(pl.col("PERIOD") == period)
+                    complete = period_df["EXHAUSTIVITY_VALUE"].sum()
+                    incomplete = len(period_df) - complete
+                    f.write(f"  {period}: {complete} complete, {incomplete} incomplete (total: {len(period_df)})\n")
+                
+                f.write(f"\nBreakdown by COC (all):\n")
+                coc_stats = (
+                    exhaustivity_df.group_by("CATEGORY_OPTION_COMBO")
+                    .agg([
+                        pl.len().alias("total"),
+                        pl.col("EXHAUSTIVITY_VALUE").sum().alias("complete")
+                    ])
+                    .with_columns([
+                        (pl.col("total") - pl.col("complete")).alias("incomplete"),
+                        (pl.col("complete") / pl.col("total") * 100).alias("pct_complete")
+                    ])
+                    .sort("total", descending=True)
+                )
+                for row in coc_stats.iter_rows(named=True):
+                    f.write(f"  {row['CATEGORY_OPTION_COMBO']}: {row['complete']} complete, {row['incomplete']} incomplete (total: {row['total']}, {row['pct_complete']:.1f}%)\n")
+                
+                f.write(f"\nBreakdown by ORG_UNIT (top 20):\n")
+                ou_stats = (
+                    exhaustivity_df.group_by("ORG_UNIT")
+                    .agg([
+                        pl.len().alias("total"),
+                        pl.col("EXHAUSTIVITY_VALUE").sum().alias("complete")
+                    ])
+                    .with_columns([
+                        (pl.col("total") - pl.col("complete")).alias("incomplete"),
+                        (pl.col("complete") / pl.col("total") * 100).alias("pct_complete")
+                    ])
+                    .sort("total", descending=True)
+                    .head(20)
+                )
+                for row in ou_stats.iter_rows(named=True):
+                    f.write(f"  {row['ORG_UNIT']}: {row['complete']} complete, {row['incomplete']} incomplete (total: {row['total']}, {row['pct_complete']:.1f}%)\n")
+                
+                f.write(f"\n{'='*80}\n\n")
+        except Exception as e:
+            safe_log_warning(f"Could not write summary.txt: {e!s}")
         
         return exhaustivity_df
         
