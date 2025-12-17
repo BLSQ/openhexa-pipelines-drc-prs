@@ -47,7 +47,13 @@ from utils import (
     default=True,
     help="Extract data elements from source DHIS2.",
 )
-
+@parameter(
+    code="run_compute_data",
+    name="Compute exhaustivity",
+    type=bool,
+    default=True,
+    help="Compute exhaustivity values from extracted data.",
+)
 # push data to target DHIS2
 @parameter(
     code="run_push_data",
@@ -63,7 +69,7 @@ from utils import (
     default=False,
     help="Sync dataset completion statuses (not implemented yet).",
 )
-def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_push_data: bool, run_ds_sync: bool):
+def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_data: bool, run_push_data: bool, run_ds_sync: bool):
     """Extract data elements from the PRS DHIS2 instance.
 
     Compute the exhaustivity value based on required columns completeness.
@@ -78,8 +84,11 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_push_data:
             run_task=run_extract_data,
         )
 
-        # 2) Compute exhaustivity
-        # (computed inside extract_data via compute_exhaustivity_and_queue)
+        # 2) Compute exhaustivity from extracted data
+        compute_exhaustivity_data(
+            pipeline_path=pipeline_path,
+            run_task=run_compute_data,
+        )
 
         # 3) Sync dataset org units: copy org units from source dataset to target dataset
         # (both in the same DHIS2 instance - no pyramid sync needed)
@@ -184,16 +193,6 @@ def extract_data(
         extract_periods=get_periods(start_extraction, end),
         extract_config=extract_config,
     )
-
-    # Collect the downloaded files and compute exhaustivity for all extracts.
-    # Use the same date range as extraction (start to end)
-    for target_extract in extract_config["DATA_ELEMENTS"].get("EXTRACTS", []):
-        compute_exhaustivity_and_queue(
-            pipeline_path=pipeline_path,
-            extract_id=target_extract.get("EXTRACT_UID"),
-            exhaustivity_periods=get_periods(start, end),
-            push_queue=push_queue,
-        )
 
 
 def handle_data_element_extracts(
@@ -313,6 +312,52 @@ def get_periods(start: str, end: str) -> list[str]:
         )
     except Exception as e:
         raise Exception(f"Error in start/end date configuration: {e!s}") from e
+
+
+@dhis2_exhaustivity.task
+def compute_exhaustivity_data(
+    pipeline_path: Path,
+    run_task: bool = True,
+) -> None:
+    """Computes exhaustivity from extracted data and enqueues the result for pushing.
+    
+    Parameters
+    ----------
+    pipeline_path : Path
+        Path to the pipeline directory.
+    run_task : bool
+        Whether to run the task or skip it.
+    """
+    if not run_task:
+        current_run.log_info("Exhaustivity computation task skipped.")
+        return
+
+    current_run.log_info("Exhaustivity computation task started.")
+    configure_logging(logs_path=pipeline_path / "logs" / "compute", task_name="compute_exhaustivity")
+
+    # Load extract config to get extracts and date range
+    from utils import load_configuration
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+    
+    # Get date range (same logic as extract_data)
+    extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
+    end = datetime.now().strftime("%Y%m")
+    end_date = datetime.strptime(end, "%Y%m")
+    start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
+    
+    # Initialize queue
+    db_path = pipeline_path / "configuration" / ".queue.db"
+    push_queue = Queue(db_path)
+    
+    # Compute exhaustivity for all extracts
+    exhaustivity_periods = get_periods(start, end)
+    for target_extract in extract_config["DATA_ELEMENTS"].get("EXTRACTS", []):
+        compute_exhaustivity_and_queue(
+            pipeline_path=pipeline_path,
+            extract_id=target_extract.get("EXTRACT_UID"),
+            exhaustivity_periods=exhaustivity_periods,
+            push_queue=push_queue,
+        )
 
 
 def compute_exhaustivity_and_queue(
