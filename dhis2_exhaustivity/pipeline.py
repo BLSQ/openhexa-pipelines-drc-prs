@@ -23,18 +23,7 @@ from utils import (
     save_to_parquet,
 )
 
-# Reuse organisation units and dataset sync logic from dhis2_dataset_sync pipeline when available.
-try:
-    from dhis2_dataset_sync.pipeline import (
-        sync_organisation_units as ds_sync_organisation_units,
-        sync_dataset_organisation_units as ds_sync_dataset_organisation_units,
-        sync_dataset_statuses as ds_sync_dataset_statuses,
-    )
-except Exception:
-    # Local runs without the other pipeline: simply disable those helpers.
-    ds_sync_organisation_units = None
-    ds_sync_dataset_organisation_units = None
-    ds_sync_dataset_statuses = None
+# Independent implementation: no dependency on dhis2_dataset_sync pipeline
 
 # Ticket(s) related to this pipeline:
 #   -https://bluesquare.atlassian.net/browse/SAN-123
@@ -46,10 +35,10 @@ except Exception:
 @pipeline("dhis2_exhaustivity")
 @parameter(
     code="run_ou_sync",
-    name="Run org units & datasets sync (recommended)",
+    name="Update dataset org units (recommended)",
     type=bool,
     default=True,
-    help="Run organisation units and dataset OU sync using the dhis2_dataset_sync logic before exhaustivity.",
+    help="Copy organisation units from source dataset to target dataset in the same DHIS2 instance.",
 )
 @parameter(
     code="run_extract_data",
@@ -72,7 +61,7 @@ except Exception:
     name="Sync dataset statuses (after push)",
     type=bool,
     default=False,
-    help="Sync dataset completion statuses between source and target DHIS2 using the dhis2_dataset_sync logic.",
+    help="Sync dataset completion statuses (not implemented yet).",
 )
 def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_push_data: bool, run_ds_sync: bool):
     """Extract data elements from the PRS DHIS2 instance.
@@ -81,49 +70,38 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_push_data:
     The results are then pushed back to PRS DHIS2 to the target exhaustivity data elements.
     """
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_exhaustivity"
-    dataset_sync_path = Path(workspace.files_path) / "pipelines" / "dhis2_dataset_sync"
 
     try:
-        # 1) Optional org units + dataset OU sync, reusing dhis2_dataset_sync pipeline logic
-        if run_ou_sync and ds_sync_organisation_units and ds_sync_dataset_organisation_units:
-            current_run.log_info("Starting organisation units sync via dhis2_dataset_sync pipeline.")
-            pyramid_ready = ds_sync_organisation_units(
-                pipeline_path=dataset_sync_path,
-                run_task=True,
-            )
-
-            current_run.log_info("Starting dataset organisation units sync via dhis2_dataset_sync pipeline.")
-            ds_sync_dataset_organisation_units(
-                pipeline_path=dataset_sync_path,
-                run_task=True,
-                wait=pyramid_ready,
-            )
-
-        # 2) Extract & compute exhaustivity (this pipeline)
+        # 1) Extract data from source DHIS2
         extract_data(
             pipeline_path=pipeline_path,
             run_task=run_extract_data,
         )
 
-        sync_ready = update_dataset_org_units(
-            pipeline_path=pipeline_path,
-            run_task=run_push_data,
-        )
+        # 2) Compute exhaustivity
+        # (computed inside extract_data via compute_exhaustivity_and_queue)
 
+        # 3) Sync dataset org units: copy org units from source dataset to target dataset
+        # (both in the same DHIS2 instance - no pyramid sync needed)
+        # This ensures the target dataset has the correct org units before pushing data
+        if run_ou_sync:
+            sync_ready = update_dataset_org_units(
+                pipeline_path=pipeline_path,
+                run_task=True,
+            )
+        else:
+            sync_ready = True
+
+        # 4) Apply mappings & push data to target DHIS2
         push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
             wait=sync_ready,
         )
 
-        # 3) Optional dataset statuses sync (after push), via dhis2_dataset_sync
-        if run_push_data and run_ds_sync and ds_sync_dataset_statuses:
-            current_run.log_info("Starting dataset statuses sync via dhis2_dataset_sync pipeline.")
-            ds_sync_dataset_statuses(
-                pipeline_path=dataset_sync_path,
-                run_task=True,
-                wait=True,
-        )
+        # 4) Optional dataset statuses sync (after push) - not implemented yet
+        if run_push_data and run_ds_sync:
+            current_run.log_warning("Dataset statuses sync is not implemented yet.")
 
     except Exception as e:
         current_run.log_error(f"An error occurred: {e}")
@@ -755,18 +733,54 @@ def update_dataset_org_units(
     try:
         current_run.log_info("Starting update of dataset organisation units.")
 
-        # Previously the source dataset has been sync with SNIS by pipeline dhis2_dataset_sync.
-        # Sync OU: PRS C- SIGL FOSA-Import SNIS SANRU (wMCnDAQfGZN) -> PRS Exhaustivity - OpenHexa (uuoQdHIDMTB)
+        # Copy org units from source datasets to target datasets (both in the same DHIS2 instance)
+        # Read all dataset mappings from push_config.json
         configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
         config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
         prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
+        dhis2_client = connect_to_dhis2(connection_str=prs_conn, cache_dir=None)
 
-        push_dataset_org_units(
-            dhis2_client=connect_to_dhis2(connection_str=prs_conn, cache_dir=None),
-            source_dataset_id="wMCnDAQfGZN",  # PRS C- SIGL FOSA-Import SNIS
-            target_dataset_id="uuoQdHIDMTB",  # PRS Exhaustivity - OpenHexa
-            dry_run=config["SETTINGS"].get("DRY_RUN", True),
-        )
+        # Collect all dataset mappings from extracts that have both SOURCE_DATASET_UID and TARGET_DATASET_UID
+        dataset_mappings = []
+        for extract in config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
+            source_ds = extract.get("SOURCE_DATASET_UID")
+            target_ds = extract.get("TARGET_DATASET_UID")
+            if source_ds and target_ds:
+                dataset_mappings.append({
+                    "source": source_ds,
+                    "target": target_ds,
+                    "extract_id": extract.get("EXTRACT_UID", "unknown")
+                })
+
+        # Also add the hardcoded mapping for exhaustivity dataset if not already in config
+        # wMCnDAQfGZN (PRS C- SIGL FOSA-Import SNIS) -> uuoQdHIDMTB (PRS Exhaustivity - OpenHexa)
+        exhaustivity_mapping = {
+            "source": "wMCnDAQfGZN",
+            "target": "uuoQdHIDMTB",
+            "extract_id": "exhaustivity"
+        }
+        # Only add if not already present
+        if not any(m["target"] == "uuoQdHIDMTB" for m in dataset_mappings):
+            dataset_mappings.append(exhaustivity_mapping)
+
+        if not dataset_mappings:
+            current_run.log_warning("No dataset mappings found. Skipping dataset org units sync.")
+            return True
+
+        current_run.log_info(f"Found {len(dataset_mappings)} dataset mapping(s) to sync.")
+        
+        # Sync each dataset mapping
+        for mapping in dataset_mappings:
+            current_run.log_info(
+                f"Syncing org units for '{mapping['extract_id']}': "
+                f"{mapping['source']} -> {mapping['target']}"
+            )
+            push_dataset_org_units(
+                dhis2_client=dhis2_client,
+                source_dataset_id=mapping["source"],
+                target_dataset_id=mapping["target"],
+                dry_run=config["SETTINGS"].get("DRY_RUN", True),
+            )
 
     except Exception as e:
         current_run.log_error("An error occurred during dataset org units update. Process stopped.")
@@ -1178,3 +1192,4 @@ def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: an
 
 if __name__ == "__main__":
     dhis2_exhaustivity()
+
