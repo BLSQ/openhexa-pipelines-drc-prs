@@ -109,8 +109,9 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_da
         )
 
         # 4) Optional dataset statuses sync (after push) - not implemented yet
-        if run_push_data and run_ds_sync:
-            current_run.log_warning("Dataset statuses sync is not implemented yet.")
+        # if run_push_data and run_ds_sync:
+        #     # Dataset statuses sync not implemented yet
+        #     pass
 
     except Exception as e:
         current_run.log_error(f"An error occurred: {e}")
@@ -460,7 +461,10 @@ def compute_exhaustivity_and_queue(
         # Compute exhaustivity values for ALL periods at once
         # This ensures we detect missing periods and create a complete grid
         # Returns DataFrame with PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
-        current_run.log_info(f"Computing exhaustivity for {len(exhaustivity_periods)} periods: {exhaustivity_periods}")
+        current_run.log_info(
+            f"Computing exhaustivity for {len(exhaustivity_periods)} periods: {exhaustivity_periods}. "
+            f"Missing periods will be filled with exhaustivity=0."
+        )
         exhaustivity_df = compute_exhaustivity(
             pipeline_path=pipeline_path,
             extract_id=extract_id,
@@ -472,12 +476,16 @@ def compute_exhaustivity_and_queue(
         )
 
         # Save exhaustivity data per period
+        current_run.log_info(f"Exhaustivity computation completed: {len(exhaustivity_df)} total combinations across all periods")
         for period in exhaustivity_periods:
             # Filter for the current period
             period_exhaustivity = exhaustivity_df.filter(pl.col("PERIOD") == period)
             
             if len(period_exhaustivity) == 0:
-                current_run.log_warning(f"No exhaustivity data computed for period {period}")
+                current_run.log_warning(
+                    f"No exhaustivity data computed for period {period}. "
+                    f"This may indicate missing data or configuration issues."
+                )
                 continue
 
             # Save exhaustivity data in simplified format: only COC, PERIOD, ORG_UNIT, EXHAUSTIVITY_VALUE
@@ -559,6 +567,8 @@ def format_for_exhaustivity_import(
             for dx_uid, mapping in push_mappings.items():
                 if relevant_dx_uids and dx_uid not in relevant_dx_uids:
                     continue
+                # Get target UID (mapped UID), fallback to source UID if no mapping
+                target_uid = mapping.get("UID", dx_uid)
                 coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
                 for _src_coc, target_coc in coc_map.items():
                     if target_coc is None:
@@ -566,7 +576,8 @@ def format_for_exhaustivity_import(
                     coc_id = str(target_coc).strip()
                     if not coc_id:
                         continue
-                    expected_dx_uids_by_coc_sets.setdefault(coc_id, set()).add(dx_uid)
+                    # Use target UID (mapped UID) instead of source UID
+                    expected_dx_uids_by_coc_sets.setdefault(coc_id, set()).add(target_uid)
 
             expected_dx_uids_by_coc = {
                 coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
@@ -852,6 +863,7 @@ def push_data(
 
     # setup
     configure_logging(logs_path=pipeline_path / "logs" / "push", task_name="push_data")
+    # load_configuration is imported at module level, use it directly
     config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
     dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
     db_path = pipeline_path / "configuration" / ".queue.db"
@@ -921,7 +933,7 @@ def push_data(
                 exhaustivity_df_pl = extract_data
                 
                 # Load extract config to get expected DX_UIDs
-                from utils import load_configuration
+                # load_configuration is imported at module level
                 extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
                 extract_config_item = next(
                     (e for e in extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", []) 

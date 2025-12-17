@@ -138,11 +138,16 @@ def compute_exhaustivity(
             if missing_extracts:
                 safe_log_warning(
                     f"Expected {len(periods)} parquet files for exhaustivity computation, "
-                    f"but missing files for periods: {missing_extracts}."
+                    f"but missing files for periods: {missing_extracts}. "
+                    f"Computing exhaustivity with available {len(periods) - len(missing_extracts)} period(s). "
+                    f"Missing periods will be filled with exhaustivity=0 in the complete grid."
                 )
             
             try:
-                df = pl.concat([pl.read_parquet(f) for f in files_to_read.values() if f is not None])
+                available_files = [f for f in files_to_read.values() if f is not None]
+                safe_log_info(f"Reading {len(available_files)} parquet file(s) for exhaustivity computation")
+                df = pl.concat([pl.read_parquet(f) for f in available_files])
+                safe_log_info(f"Loaded {len(df)} rows from extracted data")
             except Exception as e:
                 raise RuntimeError(f"Error reading parquet files for exhaustivity computation: {e!s}") from e
         
@@ -164,20 +169,29 @@ def compute_exhaustivity(
                 try:
                     push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
                     push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
-                    # Collect all mappings from push_config
-                    for push_extract in push_extracts:
-                        push_mappings = push_extract.get("MAPPINGS", {})
-                        # Only include mappings for UIDs that are in this extract
-                        if extract_config_item.get("UIDS"):
-                            extract_uids = set(extract_config_item.get("UIDS", []))
-                            for uid, mapping in push_mappings.items():
-                                if uid in extract_uids:
-                                    mappings[uid] = mapping
+                    # Find the extract that matches extract_id
+                    matching_extract = next(
+                        (e for e in push_extracts if e.get("EXTRACT_UID") == extract_id),
+                        None
+                    )
+                    if matching_extract:
+                        push_mappings = matching_extract.get("MAPPINGS", {})
+                        if push_mappings:
+                            # Only include mappings for UIDs that are in this extract
+                            if extract_config_item and extract_config_item.get("UIDS"):
+                                extract_uids = set(extract_config_item.get("UIDS", []))
+                                for uid, mapping in push_mappings.items():
+                                    if uid in extract_uids:
+                                        mappings[uid] = mapping
+                            else:
+                                mappings.update(push_mappings)
+                            
+                            if mappings:
+                                safe_log_info(f"Loaded mappings from push_config for {extract_id}: {len(mappings)} mappings")
                         else:
-                            mappings.update(push_mappings)
-                    
-                    if mappings:
-                        safe_log_info(f"Loaded mappings from push_config for {extract_id}: {len(mappings)} mappings")
+                            safe_log_info(f"No mappings found in push_config for {extract_id}, skipping mapping filters")
+                    else:
+                        safe_log_warning(f"Extract {extract_id} not found in push_config")
                 except Exception as e:
                     safe_log_warning(f"Could not load mappings from push_config: {e!s}")
         
@@ -191,6 +205,11 @@ def compute_exhaustivity(
                 
                 # Filter by DX_UID
                 df_uid = df.filter(pl.col("DX_UID") == uid)
+                
+                # Only process if we have data for this UID
+                if len(df_uid) == 0:
+                    safe_log_warning(f"No data found for DX_UID {uid} in mappings, skipping")
+                    continue
                 
                 # Filter by COC if specified
                 if coc_mappings:
@@ -214,7 +233,9 @@ def compute_exhaustivity(
             
             if chunks:
                 df = pl.concat(chunks)
+                safe_log_info(f"After applying mappings: {len(df)} rows remaining")
             else:
+                safe_log_warning("No data matched the mappings, DataFrame will be empty")
                 df = pl.DataFrame()
         
         # Check if dataframe is empty
