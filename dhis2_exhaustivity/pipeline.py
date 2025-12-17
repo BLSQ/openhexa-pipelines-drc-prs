@@ -392,9 +392,6 @@ def compute_exhaustivity_and_queue(
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Clean summary file at the start for this extract
-    summary_file = output_dir / "summary.txt"
-    if summary_file.exists():
-        summary_file.unlink()
     
     try:
         for period in exhaustivity_periods:
