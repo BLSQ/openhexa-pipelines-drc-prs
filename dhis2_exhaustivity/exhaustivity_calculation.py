@@ -309,10 +309,15 @@ def compute_exhaustivity(
 
         # 2) Fallback: if push_config did not provide anything, derive expected DX_UIDs per COC from data
         if not expected_dx_uids_by_coc:
-            expected_dx_uids_by_coc = {}
-            for coc in df_all_periods["CATEGORY_OPTION_COMBO"].unique().to_list():
-                coc_data = df_all_periods.filter(pl.col("CATEGORY_OPTION_COMBO") == coc)
-                expected_dx_uids_by_coc[coc] = sorted(coc_data["DX_UID"].unique().to_list())
+            # Optimized: use group_by instead of filtering for each COC
+            coc_dx_uids_df = (
+                df_all_periods.group_by("CATEGORY_OPTION_COMBO")
+                .agg(pl.col("DX_UID").unique().sort().alias("DX_UIDs"))
+            )
+            expected_dx_uids_by_coc = {
+                row["CATEGORY_OPTION_COMBO"]: row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]]
+                for row in coc_dx_uids_df.iter_rows(named=True)
+            }
             logging.info(
                 f"Expected DX_UIDs per COC derived from data (no push_config mapping): {len(expected_dx_uids_by_coc)} COCs"
             )
@@ -330,6 +335,8 @@ def compute_exhaustivity(
         )
         
         # Check exhaustivity: all expected DX_UIDs must be present AND non-null
+        # Note: Using iter_rows here is acceptable for complex set operations
+        # The performance impact is minimal compared to I/O operations
         exhaustivity_rows = []
         for row in df_grouped_for_log.iter_rows(named=True):
             period = row["PERIOD"]
@@ -337,7 +344,6 @@ def compute_exhaustivity(
             org_unit = row["ORG_UNIT"]
             
             dx_uids_present = set(row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]])
-            values_list = row["VALUES"] if isinstance(row["VALUES"], list) else [row["VALUES"]]
             null_flags_list = row["NULL_FLAGS"] if isinstance(row["NULL_FLAGS"], list) else [row["NULL_FLAGS"]]
             
             # Get expected DX_UIDs for this COC (global, across all periods)
@@ -357,16 +363,10 @@ def compute_exhaustivity(
                 "CATEGORY_OPTION_COMBO": coc,
                 "ORG_UNIT": org_unit,
                 "EXHAUSTIVITY_VALUE": exhaustivity_value,
-                "MISSING_DX_UIDs": list(missing_dx_uids),
-                "HAS_NULL_VALUE": has_null_value
             })
-            
-            # No detailed logging per row to avoid API overload
         
         # Create the final exhaustivity dataframe
-        exhaustivity_df = pl.DataFrame(exhaustivity_rows).select([
-            "PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"
-        ])
+        exhaustivity_df = pl.DataFrame(exhaustivity_rows)
         
         # Log summary only (use logging instead of current_run to reduce API calls)
         total_combinations = len(exhaustivity_df)
@@ -424,19 +424,14 @@ def compute_exhaustivity(
                 f"{len(expected_org_units_list)} ORG_UNITs = {len(expected_periods) * len(all_expected_cocs) * len(expected_org_units_list)} combinations"
             )
             
-            # Create a complete grid of all expected combinations
-            all_combinations = []
-            for period in expected_periods:
-                for coc in all_expected_cocs:
-                    for org_unit in expected_org_units_list:
-                        all_combinations.append({
-                            "PERIOD": period,
-                            "CATEGORY_OPTION_COMBO": coc,
-                            "ORG_UNIT": org_unit
-                        })
+            # Create a complete grid of all expected combinations (optimized with Polars)
+            # Use cross join for better performance than nested loops
+            periods_df = pl.DataFrame({"PERIOD": expected_periods})
+            cocs_df = pl.DataFrame({"CATEGORY_OPTION_COMBO": all_expected_cocs})
+            org_units_df = pl.DataFrame({"ORG_UNIT": expected_org_units_list})
             
-            # Create DataFrame with all expected combinations
-            expected_df = pl.DataFrame(all_combinations)
+            # Create cartesian product using cross joins
+            expected_df = periods_df.join(cocs_df, how="cross").join(org_units_df, how="cross")
             
             # Left join with computed exhaustivity
             # Missing combinations will have null EXHAUSTIVITY_VALUE

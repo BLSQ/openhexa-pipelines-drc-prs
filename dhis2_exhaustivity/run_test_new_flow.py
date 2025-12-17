@@ -47,7 +47,7 @@ def main():
     
     # Copier les configs si nécessaire
     config_files_dir = Path(__file__).parent / "config_files"
-    workspace_config_dir = pipeline_path / "configuration"
+    workspace_config_dir = pipeline_path / "config_files"
     workspace_config_dir.mkdir(parents=True, exist_ok=True)
     
     # Copier les configs nécessaires
@@ -137,10 +137,61 @@ def main():
         
         # Vérifier la queue
         from d2d_library.db_queue import Queue
-        db_path = pipeline_path / "configuration" / ".queue.db"
+        db_path = pipeline_path / "config_files" / ".queue.db"
         push_queue = Queue(db_path)
         queue_count = push_queue.count()
         print(f"\n📋 Queue: {queue_count} éléments en attente de push")
+        
+        # Afficher un résumé détaillé des résultats
+        print("\n" + "=" * 80)
+        print("📊 RÉSUMÉ DÉTAILLÉ DES RÉSULTATS")
+        print("=" * 80)
+        if processed_dir.exists():
+            for folder in processed_dir.iterdir():
+                if folder.is_dir():
+                    exhaustivity_files = list(folder.glob("exhaustivity_*.parquet"))
+                    if exhaustivity_files:
+                        print(f"\n📁 Extract: {folder.name}")
+                        try:
+                            import polars as pl
+                            all_data = []
+                            for f in exhaustivity_files:
+                                df = pl.read_parquet(f)
+                                all_data.append(df)
+                            
+                            if all_data:
+                                combined_df = pl.concat(all_data)
+                                print(f"   Total combinaisons: {len(combined_df)}")
+                                
+                                # Statistiques par période
+                                periods = combined_df["PERIOD"].unique().to_list()
+                                print(f"   Périodes: {sorted(periods)}")
+                                
+                                # Statistiques exhaustivity
+                                if "EXHAUSTIVITY_VALUE" in combined_df.columns:
+                                    exhaustivity_stats = combined_df.group_by("EXHAUSTIVITY_VALUE").agg(
+                                        pl.count().alias("count")
+                                    )
+                                    print(f"   Exhaustivity:")
+                                    for row in exhaustivity_stats.iter_rows(named=True):
+                                        value = row["EXHAUSTIVITY_VALUE"]
+                                        count = row["count"]
+                                        pct = (count / len(combined_df)) * 100
+                                        print(f"     - {value}: {count} combinaisons ({pct:.1f}%)")
+                                
+                                # Statistiques par COC
+                                cocs = combined_df["CATEGORY_OPTION_COMBO"].unique().to_list()
+                                print(f"   COCs: {len(cocs)}")
+                                
+                                # Statistiques par ORG_UNIT
+                                org_units = combined_df["ORG_UNIT"].unique().to_list()
+                                print(f"   ORG_UNITs: {len(org_units)}")
+                                
+                                # Afficher quelques exemples
+                                print(f"\n   📋 Exemples (5 premières lignes):")
+                                print(combined_df.head(5))
+                        except Exception as e:
+                            print(f"   ⚠️  Erreur lors de l'analyse: {e}")
         
         print("\n" + "=" * 80)
         print("🔄 ÉTAPE 3: SYNC DATASET ORG UNITS (skipped pour le test)")
@@ -150,17 +201,28 @@ def main():
         print("⚠️  Sync dataset org units skipped (nécessite connexion DHIS2)")
         
         print("\n" + "=" * 80)
+        print("🔄 ÉTAPE 4: PUSH DATA (skipped pour le test)")
+        print("=" * 80 + "\n")
+        
+        # Étape 4: Push (on skip pour le test car ça nécessite une connexion DHIS2)
+        print("⚠️  Push data skipped (nécessite connexion DHIS2)")
+        print("   Pour tester le push, utilisez: push_data(pipeline_path=pipeline_path, run_task=True)")
+        
+        print("\n" + "=" * 80)
         print("✅ TEST TERMINÉ AVEC SUCCÈS")
         print("=" * 80)
         print("\n📊 RÉSUMÉ:")
         print("  ✅ Extraction: OK")
         print("  ✅ Calcul exhaustivity (nouvelle task): OK")
-        print("  ⏭️  Sync org units: Skipped")
-        print("  ⏭️  Push: Skipped")
+        print("  ⏭️  Sync org units: Skipped (nécessite connexion DHIS2)")
+        print("  ⏭️  Push: Skipped (nécessite connexion DHIS2)")
         print("\n📝 Les résultats sont disponibles dans:")
         print(f"   - Extracts: {extracts_dir}")
         print(f"   - Processed: {processed_dir}")
         print(f"   - Logs: {pipeline_path / 'logs'}")
+        print("\n💡 Pour visualiser les résultats en détail:")
+        print("   - Ouvrez les fichiers .parquet dans processed/")
+        print("   - Utilisez pandas/polars pour analyser les données")
         print("=" * 80)
         
     except Exception as e:

@@ -279,10 +279,10 @@ def handle_data_element_extracts(
 
             except Exception as e:
                 current_run.log_warning(
-                    f"Extract {extract_id} download failed for period {period}, skipping to next extract."
+                    f"Extract {extract_id} download failed for period {period}, continuing with next period."
                 )
                 logging.error(f"Extract {extract_id} - period {period} error: {e!s}")
-                break  # skip to next extract
+                continue  # continue with next period instead of stopping the entire extract
 
         current_run.log_info(f"Extract {extract_id} finished.")
 
@@ -346,7 +346,7 @@ def compute_exhaustivity_data(
     start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
     
     # Initialize queue
-    db_path = pipeline_path / "configuration" / ".queue.db"
+    db_path = pipeline_path / "config_files" / ".queue.db"
     push_queue = Queue(db_path)
     
     # Compute exhaustivity for all extracts
@@ -619,36 +619,16 @@ def format_for_exhaustivity_import(
         f"Formatting exhaustivity data for import: {len(exhaustivity_df)} entries, "
         f"{len(expected_dx_uids_by_coc)} COCs with mappings"
     )
-    expanded_rows = []
-    cocs_in_exhaustivity = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list()
-    for row in exhaustivity_df.iter_rows(named=True):
-        period = row["PERIOD"]
-        coc = row["CATEGORY_OPTION_COMBO"]
-        org_unit = row["ORG_UNIT"]
-        exhaustivity_value = row["EXHAUSTIVITY_VALUE"]
-        
-        # Get expected DX_UIDs for this COC
-        dx_uids = expected_dx_uids_by_coc.get(coc, [])
-        if dx_uids:
-            for dx_uid in dx_uids:
-                expanded_rows.append({
-                    "PERIOD": period,
-                    "DX_UID": dx_uid,
-                    "ORG_UNIT": org_unit,
-                    "EXHAUSTIVITY_VALUE": exhaustivity_value,
-                })
-        else:
-            # Only log warning once per COC to avoid spam
-            if coc not in getattr(format_for_exhaustivity_import, '_warned_cocs', set()):
-                if not hasattr(format_for_exhaustivity_import, '_warned_cocs'):
-                    format_for_exhaustivity_import._warned_cocs = set()
-                format_for_exhaustivity_import._warned_cocs.add(coc)
-                current_run.log_warning(
-                    f"format_for_exhaustivity_import: No expected DX_UIDs found for COC {coc} "
-                    f"in push_config mapping ({len(expected_dx_uids_by_coc)} COCs available)"
-                )
+    # Optimized: use Polars join instead of nested loops for expansion
+    # Create a DataFrame mapping COC to expected DX_UIDs
+    coc_dx_uids_list = [
+        {"CATEGORY_OPTION_COMBO": coc, "DX_UID": dx_uid}
+        for coc, dx_uids in expected_dx_uids_by_coc.items()
+        for dx_uid in dx_uids
+    ]
     
-    if not expanded_rows:
+    if not coc_dx_uids_list:
+        current_run.log_warning("No expected DX_UIDs found for any COC, cannot expand exhaustivity data.")
         return pl.DataFrame({
             "DATA_TYPE": [],
             "DX_UID": [],
@@ -660,8 +640,25 @@ def format_for_exhaustivity_import(
             "DOMAIN_TYPE": [],
         }).to_pandas()
     
-    # Create expanded DataFrame
-    expanded_df = pl.DataFrame(expanded_rows)
+    coc_dx_uids_df = pl.DataFrame(coc_dx_uids_list)
+    
+    # Join exhaustivity_df with coc_dx_uids_df to expand
+    # This creates one row per (PERIOD, COC, ORG_UNIT, DX_UID) combination
+    expanded_df = exhaustivity_df.join(
+        coc_dx_uids_df,
+        on="CATEGORY_OPTION_COMBO",
+        how="inner"  # Only keep COCs that have expected DX_UIDs
+    )
+    
+    # Log warnings for COCs without expected DX_UIDs (only once)
+    cocs_in_exhaustivity = set(exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list())
+    cocs_with_mappings = set(expected_dx_uids_by_coc.keys())
+    missing_cocs = cocs_in_exhaustivity - cocs_with_mappings
+    if missing_cocs:
+        current_run.log_warning(
+            f"No expected DX_UIDs found for {len(missing_cocs)} COC(s) in exhaustivity data, "
+            f"skipping expansion for these COCs."
+        )
     
     # Format for DHIS2 import using polars
     # Each row represents an exhaustivity value for a (PERIOD, DX_UID, ORG_UNIT) combination
