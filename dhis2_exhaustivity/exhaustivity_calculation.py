@@ -162,7 +162,7 @@ def compute_exhaustivity(
             # If no mappings in extract_config, try to load from push_config
             if not mappings and pipeline_path:
                 try:
-                    push_config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
+                    push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
                     push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
                     # Collect all mappings from push_config
                     for push_extract in push_extracts:
@@ -263,7 +263,7 @@ def compute_exhaustivity(
         # 1) Try to build expected DX_UIDs per COC from push_config mappings
         expected_dx_uids_by_coc: dict[str, list[str]] = {}
         try:
-            push_config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
+            push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
             push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
             push_mappings: dict[str, dict] = {}
             for push_extract in push_extracts:
@@ -520,7 +520,7 @@ def compute_and_log_exhaustivity(
         # Load configuration if not provided
         if extract_config is None:
             from utils import load_configuration
-            extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
+            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
         
         # Get extract information
         target_extract = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])

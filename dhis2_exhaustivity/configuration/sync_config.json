@@ -1,0 +1,38 @@
+{  
+    "ORG_UNITS": {
+        "SELECTION": {
+            "UIDS": [
+                "rWrCdr321Qu",
+                "XjeRGfqHMrl",
+                "F9w3VW1cQmb",
+                "wy1lwIP18SL",
+                "Q4cbnIAo10f",
+                "dKdrd8HqZWz",
+                "PvtAI4RUMkr",
+                "BmKjwqc6BEw",
+                "TwSa8zUu09Q",
+                "I8CuQpdBQfP",
+                "D15NtionqkH",
+                "dJ3v8xc6ZIK",
+                "u0vP3ZicczY",
+                "krWZMdwGDIf",
+                "uyuwe6bqphf",
+                "pIAYIpy4hiH",
+                "iu4Zj3Zq39m",
+                "JkIljbLc4Ny",
+                "mnOXJ2Oa5U7",
+                "ym2K6YcSNl9"
+            ],
+            "INCLUDE_CHILDREN": true,
+            "LIMIT_LEVEL": 5
+        },
+        "ORG_UNITS_GROUPS": {
+            "UIDS": []
+        }
+    },    
+    "DATASETS": {
+        "DxDuYrrZSa7": "wMCnDAQfGZN",
+        "FULL_PYRAMID": "dbf1uGX1XU3",
+        "ZONES_SANTE": "Om2WgL4TNEy"
+    }
+}

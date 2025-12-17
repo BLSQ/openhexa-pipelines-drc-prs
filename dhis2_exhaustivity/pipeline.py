@@ -131,7 +131,7 @@ def extract_data(
     configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
 
     # load configuration
-    extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
 
     # connect to source DHIS2 instance (No cache for data extraction)
     dhis2_client = connect_to_dhis2(
@@ -139,7 +139,7 @@ def extract_data(
     )
 
     # initialize queue
-    db_path = pipeline_path / "config_files" / ".queue.db"
+    db_path = pipeline_path / "configuration" / ".queue.db"
     push_queue = Queue(db_path)
 
     try:
@@ -337,7 +337,7 @@ def compute_exhaustivity_data(
 
     # Load extract config to get extracts and date range
     from utils import load_configuration
-    extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     
     # Get date range (same logic as extract_data)
     extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
@@ -346,7 +346,7 @@ def compute_exhaustivity_data(
     start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
     
     # Initialize queue
-    db_path = pipeline_path / "config_files" / ".queue.db"
+    db_path = pipeline_path / "configuration" / ".queue.db"
     push_queue = Queue(db_path)
     
     # Compute exhaustivity for all extracts
@@ -381,7 +381,7 @@ def compute_exhaustivity_and_queue(
     """
     # Load config to get org units level for folder naming
     from utils import load_configuration
-    extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     
     # Find the extract configuration to determine folder name
     extract_config_item = None
@@ -420,7 +420,7 @@ def compute_exhaustivity_and_queue(
         # Get expected DX_UIDs and ORG_UNITs from extract configuration
         # Load extract config to get expected data elements
         from utils import load_configuration
-        extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
+        extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
         
         # Find the extract configuration
         extract_config_item = None
@@ -540,7 +540,7 @@ def format_for_exhaustivity_import(
     if pipeline_path:
         try:
             from utils import load_configuration
-            push_config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
+            push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
             push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
             push_mappings: dict[str, dict] = {}
             for push_extract in push_extracts:
@@ -707,7 +707,7 @@ def update_dataset_org_units(
         # Copy org units from source datasets to target datasets (both in the same DHIS2 instance)
         # Read all dataset mappings from push_config.json
         configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
-        config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
+        config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
         prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
         dhis2_client = connect_to_dhis2(connection_str=prs_conn, cache_dir=None)
 
@@ -852,7 +852,7 @@ def push_data(
 
     # setup
     configure_logging(logs_path=pipeline_path / "logs" / "push", task_name="push_data")
-    config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
+    config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
     dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
     db_path = pipeline_path / "configuration" / ".queue.db"
     push_queue = Queue(db_path)
@@ -924,7 +924,7 @@ def push_data(
                 
                 # Load extract config to get expected DX_UIDs
                 from utils import load_configuration
-                extract_config_full = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
+                extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
                 extract_config_item = next(
                     (e for e in extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", []) 
                      if e.get("EXTRACT_UID") == extract_id), 
