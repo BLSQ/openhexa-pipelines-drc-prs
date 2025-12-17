@@ -444,26 +444,17 @@ def compute_exhaustivity_and_queue(
                     
                     missing_data_df = pl.DataFrame(all_combinations)
                     
-                    # Format for DHIS2 import
-                    # For missing data, we need to read other periods' data to determine expected DX_UIDs for each COC
-                    original_data = None
-                    try:
-                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                        if all_period_files:
-                            original_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
-                    except Exception as e:
-                        current_run.log_warning(f"Could not read original data for missing period: {e}")
-                    df_final = format_for_exhaustivity_import(
-                        missing_data_df, 
-                        original_data=original_data,
-                        pipeline_path=pipeline_path,
-                        extract_id=extract_id,
-                        extract_config_item=extract_config_item,
-                    )
+                    # Save exhaustivity data in simplified format: only COC, PERIOD, ORG_UNIT, EXHAUSTIVITY_VALUE
+                    missing_data_simplified = missing_data_df.select([
+                        "PERIOD",
+                        "CATEGORY_OPTION_COMBO",
+                        "ORG_UNIT",
+                        "EXHAUSTIVITY_VALUE"
+                    ])
                     
                     try:
                         save_to_parquet(
-                            data=df_final,
+                            data=missing_data_simplified.to_pandas(),
                             filename=output_dir / f"exhaustivity_{period}.parquet",
                         )
                         push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
@@ -541,25 +532,17 @@ def compute_exhaustivity_and_queue(
                 current_run.log_warning(f"No exhaustivity data computed for period {period}")
                 continue
 
-            # Format for DHIS2 import
-            # Read original data to determine expected DX_UIDs for each COC
-            original_data = None
-            if period_file.exists():
-                try:
-                    original_data = pl.read_parquet(period_file)
-                except Exception as e:
-                    current_run.log_warning(f"Could not read original data for period {period}: {e}")
-            df_final = format_for_exhaustivity_import(
-                period_exhaustivity, 
-                original_data=original_data,
-                pipeline_path=pipeline_path,
-                extract_id=extract_id,
-                extract_config_item=extract_config_item,
-            )
+            # Save exhaustivity data in simplified format: only COC, PERIOD, ORG_UNIT, EXHAUSTIVITY_VALUE
+            period_exhaustivity_simplified = period_exhaustivity.select([
+                "PERIOD",
+                "CATEGORY_OPTION_COMBO",
+                "ORG_UNIT",
+                "EXHAUSTIVITY_VALUE"
+            ])
 
             try:
                 save_to_parquet(
-                    data=df_final,
+                    data=period_exhaustivity_simplified.to_pandas(),
                     filename=output_dir / f"exhaustivity_{period}.parquet",
                 )
                 push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
@@ -933,22 +916,86 @@ def push_data(
             continue
 
         try:
-            # Determine data type
-            data_type = extract_data["DATA_TYPE"].unique()[0]
-
             current_run.log_info(f"Pushing data for extract {extract_id}: {short_path}.")
-            if data_type not in dispatch_map:
-                current_run.log_warning(f"Unknown DATA_TYPE '{data_type}' in extract: {short_path}. Skipping.")
-                push_queue.dequeue()  # remove unknown item
-                continue
+            
+            # Detect exhaustivity files by presence of CATEGORY_OPTION_COMBO column
+            # (exhaustivity files have COC format, other files have DX_UID format)
+            is_exhaustivity = "CATEGORY_OPTION_COMBO" in extract_data.columns
+            
+            if is_exhaustivity:
+                # Handle EXHAUSTIVITY data: expand from COC format to DX_UID format
+                # Convert back to polars for processing
+                exhaustivity_df_pl = pl.from_pandas(extract_data)
+                
+                # Load extract config to get expected DX_UIDs
+                from utils import load_configuration
+                extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+                extract_config_item = next(
+                    (e for e in extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", []) 
+                     if e.get("EXTRACT_UID") == extract_id), 
+                    None
+                )
+                
+                # Read original data if available (for fallback)
+                original_data = None
+                extracts_folder = pipeline_path / "data" / "extracts"
+                if "Fosa" in extract_id:
+                    extracts_folder = extracts_folder / "Extract lvl 5"
+                elif "BCZ" in extract_id:
+                    extracts_folder = extracts_folder / "Extract lvl 3"
+                else:
+                    for folder in extracts_folder.iterdir():
+                        if folder.is_dir() and extract_id in folder.name:
+                            extracts_folder = folder
+                            break
+                
+                # Try to read original data from the same period
+                period = exhaustivity_df_pl["PERIOD"].unique().to_list()[0] if len(exhaustivity_df_pl) > 0 else None
+                if period:
+                    period_file = extracts_folder / f"data_{period}.parquet"
+                    if period_file.exists():
+                        try:
+                            original_data = pl.read_parquet(period_file)
+                        except Exception:
+                            pass
+                
+                # Expand from COC format to DX_UID format for DHIS2 import
+                df_final = format_for_exhaustivity_import(
+                    exhaustivity_df_pl.select(["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"]),
+                    original_data=original_data,
+                    pipeline_path=pipeline_path,
+                    extract_id=extract_id,
+                    extract_config_item=extract_config_item,
+                )
+                
+                # Apply mapping and push data
+                cfg_list, mapper_func = dispatch_map["DATA_ELEMENT"]
+                extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
+                df_mapped = mapper_func(df=df_final, extract_config=extract_config)
+                pusher.push_data(df_data=df_mapped)
+            
+            else:
+                # Handle other data types (DATA_ELEMENT, REPORTING_RATE, INDICATOR)
+                # Determine data type from DATA_TYPE column
+                if "DATA_TYPE" not in extract_data.columns:
+                    current_run.log_warning(f"No DATA_TYPE column in extract: {short_path}. Skipping.")
+                    push_queue.dequeue()  # remove unknown item
+                    continue
+                
+                data_type = extract_data["DATA_TYPE"].unique()[0]
+                
+                if data_type not in dispatch_map:
+                    current_run.log_warning(f"Unknown DATA_TYPE '{data_type}' in extract: {short_path}. Skipping.")
+                    push_queue.dequeue()  # remove unknown item
+                    continue
+                
+                # Get config and mapping function
+                cfg_list, mapper_func = dispatch_map[data_type]
+                extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
 
-            # Get config and mapping function
-            cfg_list, mapper_func = dispatch_map[data_type]
-            extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
-
-            # Apply mapping and push data
-            df_mapped = mapper_func(df=extract_data, extract_config=extract_config)
-            pusher.push_data(df_data=df_mapped)
+                # Apply mapping and push data
+                df_mapped = mapper_func(df=extract_data, extract_config=extract_config)
+                pusher.push_data(df_data=df_mapped)
 
             # Success → dequeue
             push_queue.dequeue()
