@@ -635,10 +635,24 @@ def format_for_exhaustivity_import(
         f"{len(expected_dx_uids_by_coc)} COCs with mappings"
     )
     # Optimized: use Polars join instead of nested loops for expansion
+    # Normalize expected_dx_uids_by_coc: ensure all values are flat lists of strings
+    # This prevents issues where nested lists might have been created
+    normalized_expected_dx_uids_by_coc: dict[str, list[str]] = {}
+    for coc, dx_uids in expected_dx_uids_by_coc.items():
+        flat_uids = []
+        for uid in dx_uids:
+            # If uid is a list, flatten it; otherwise keep as string
+            if isinstance(uid, list):
+                flat_uids.extend([str(u) for u in uid])
+            else:
+                flat_uids.append(str(uid))
+        # Remove duplicates and sort
+        normalized_expected_dx_uids_by_coc[coc] = sorted(list(set(flat_uids)))
+    
     # Create a DataFrame mapping COC to expected DX_UIDs
     coc_dx_uids_list = [
         {"CATEGORY_OPTION_COMBO": coc, "DX_UID": dx_uid}
-        for coc, dx_uids in expected_dx_uids_by_coc.items()
+        for coc, dx_uids in normalized_expected_dx_uids_by_coc.items()
         for dx_uid in dx_uids
     ]
     
@@ -656,6 +670,12 @@ def format_for_exhaustivity_import(
         })
     
     coc_dx_uids_df = pl.DataFrame(coc_dx_uids_list)
+    
+    # Ensure DX_UID is explicitly a String (defensive check, should not be needed after normalization)
+    if "DX_UID" in coc_dx_uids_df.columns:
+        coc_dx_uids_df = coc_dx_uids_df.with_columns([
+            pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID")
+        ])
     
     # Join exhaustivity_df with coc_dx_uids_df to expand
     # This creates one row per (PERIOD, COC, ORG_UNIT, DX_UID) combination
@@ -677,8 +697,11 @@ def format_for_exhaustivity_import(
     
     # Format for DHIS2 import using polars
     # Each row represents an exhaustivity value for a (PERIOD, DX_UID, ORG_UNIT) combination
+    # DX_UID should already be a String from the join, but ensure it explicitly
     df_final = expanded_df.with_columns([
         pl.lit("DATA_ELEMENT").alias("DATA_TYPE"),
+        # Ensure DX_UID is explicitly a String (defensive check)
+        pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID"),
         pl.col("EXHAUSTIVITY_VALUE").cast(pl.Int64).alias("VALUE"),
         pl.lit(None).alias("ATTRIBUTE_OPTION_COMBO"),
         pl.lit(None).alias("RATE_TYPE"),
@@ -976,6 +999,12 @@ def push_data(
                     extract_config_item=extract_config_item,
                 )
                 
+                # Check if format_for_exhaustivity_import returned empty DataFrame
+                if df_final.is_empty():
+                    current_run.log_warning(f"format_for_exhaustivity_import returned empty DataFrame for {extract_id}, skipping push")
+                    push_queue.dequeue()
+                    continue
+                
                 # Apply mapping and push data
                 # Use the extract_id we determined (should match push_config now)
                 cfg_list, mapper_func = dispatch_map["DATA_ELEMENT"]
@@ -985,6 +1014,13 @@ def push_data(
                     current_run.log_warning(f"Extract config not found in push_config for {extract_id}, pushing without mappings")
                 
                 df_mapped = mapper_func(df=df_final, extract_config=extract_config)
+                
+                # Check if mapped DataFrame is empty
+                if df_mapped.is_empty():
+                    current_run.log_warning(f"Mapped DataFrame is empty for {extract_id}, skipping push")
+                    push_queue.dequeue()
+                    continue
+                
                 pusher.push_data(df_data=df_mapped)
             
             else:
@@ -1015,8 +1051,13 @@ def push_data(
             current_run.log_info(f"Data push finished for extract: {short_path}.")
 
         except Exception as e:
+            error_msg = f"Fatal error for extract {extract_id} ({short_path}): {e!s}"
             current_run.log_error(f"Fatal error for extract {extract_id} ({short_path}), stopping push process.")
-            logging.error(f"Fatal error for extract {extract_id} ({short_path}): {e!s}")
+            logging.error(error_msg)
+            # Log full traceback for debugging
+            import traceback
+            traceback_str = traceback.format_exc()
+            logging.error(f"Full traceback:\n{traceback_str}")
             raise  # crash on error
 
     current_run.log_info("Data push task finished.")
@@ -1059,6 +1100,11 @@ def apply_analytics_data_element_extract_config(df: pl.DataFrame, extract_config
     pl.DataFrame
         DataFrame with mapped data elements.
     """
+    # Handle empty DataFrame
+    if df.is_empty():
+        current_run.log_warning("Empty DataFrame provided to apply_analytics_data_element_extract_config, returning empty DataFrame.")
+        return df
+    
     if len(extract_config) == 0:
         current_run.log_warning("No extract details provided, skipping data element mappings.")
         return df
@@ -1070,6 +1116,20 @@ def apply_analytics_data_element_extract_config(df: pl.DataFrame, extract_config
 
     # Use polars directly
     df_pl = df
+
+    # Ensure DX_UID is explicitly a String before processing
+    # This is a defensive check - DX_UID should already be a String from format_for_exhaustivity_import
+    if "DX_UID" in df_pl.columns:
+        # If DX_UID is somehow a List, flatten it; otherwise just cast to String
+        if df_pl["DX_UID"].dtype == pl.List:
+            current_run.log_warning("DX_UID column is a List type, flattening to String (this should not happen)")
+            df_pl = df_pl.with_columns([
+                pl.col("DX_UID").list.get(0).cast(pl.Utf8).alias("DX_UID")
+            ])
+        else:
+            df_pl = df_pl.with_columns([
+                pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID")
+            ])
 
     # Loop over the configured data element mappings to filter by COC/AOC if provided
     current_run.log_info(f"Applying data element mappings for extract: {extract_config.get('EXTRACT_UID')}.")
@@ -1087,21 +1147,25 @@ def apply_analytics_data_element_extract_config(df: pl.DataFrame, extract_config
             coc_mappings = {k: v for k, v in coc_mappings.items() if v is not None}  # Do not replace with None
             coc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in coc_mappings.items()}
             coc_keys = list(coc_mappings_clean.keys())
-            df_uid = df_uid.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(coc_keys))
-            # Replace values using polars replace
-            df_uid = df_uid.with_columns(
-                pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
-            )
+            # Only filter by COC if CATEGORY_OPTION_COMBO column exists
+            if "CATEGORY_OPTION_COMBO" in df_uid.columns:
+                df_uid = df_uid.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(coc_keys))
+                # Replace values using polars replace
+                df_uid = df_uid.with_columns(
+                    pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
+                )
 
         if aoc_mappings:
             aoc_mappings = {k: v for k, v in aoc_mappings.items() if v is not None}  # Do not replace with None
             aoc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in aoc_mappings.items()}
             aoc_keys = list(aoc_mappings_clean.keys())
-            df_uid = df_uid.filter(pl.col("ATTRIBUTE_OPTION_COMBO").is_in(aoc_keys))
-            # Replace values using polars replace
-            df_uid = df_uid.with_columns(
-                pl.col("ATTRIBUTE_OPTION_COMBO").replace(aoc_mappings_clean)
-            )
+            # Only filter by AOC if ATTRIBUTE_OPTION_COMBO column exists
+            if "ATTRIBUTE_OPTION_COMBO" in df_uid.columns:
+                df_uid = df_uid.filter(pl.col("ATTRIBUTE_OPTION_COMBO").is_in(aoc_keys))
+                # Replace values using polars replace
+                df_uid = df_uid.with_columns(
+                    pl.col("ATTRIBUTE_OPTION_COMBO").replace(aoc_mappings_clean)
+                )
 
         if uid_mapping:
             uid_mappings[uid] = uid_mapping
