@@ -34,8 +34,7 @@ openhexa.sdk.workspace = MockWorkspace()
 
 # Importer les modules après le patch
 import polars as pl
-from pipeline import compute_exhaustivity_data
-from utils import save_to_parquet
+from utils import save_to_parquet, load_configuration
 
 def create_mock_extract_data(pipeline_path: Path, extract_id: str, period: str):
     """Crée des données mockées pour tester le calcul d'exhaustivité."""
@@ -237,9 +236,48 @@ def main():
     print("=" * 80 + "\n")
     
     try:
-        # Calcul exhaustivity
-        compute_exhaustivity_data(pipeline_path=pipeline_path, run_task=True)
+        # Mock configure_logging pour éviter les erreurs dans l'environnement de test
+        import pipeline
+        original_configure = pipeline.configure_logging
+        def mock_configure_logging(*args, **kwargs):
+            pass
+        pipeline.configure_logging = mock_configure_logging
+        
+        # Appeler directement compute_exhaustivity_and_queue au lieu de compute_exhaustivity_data
+        # car compute_exhaustivity_data est un PipelineWithTask qui ne s'exécute pas directement
+        from pipeline import compute_exhaustivity_and_queue
+        from d2d_library.db_queue import Queue
+        from datetime import datetime
+        from dateutil.relativedelta import relativedelta
+        from pipeline import get_periods
+        
+        # Calculer les périodes
+        extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+        extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
+        end = datetime.now().strftime("%Y%m")
+        end_date = datetime.strptime(end, "%Y%m")
+        start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
+        exhaustivity_periods = get_periods(start, end)
+        
+        # Initialiser la queue
+        db_path = pipeline_path / "configuration" / ".queue.db"
+        push_queue = Queue(db_path)
+        
+        # Calculer l'exhaustivité pour chaque extract
+        for target_extract in extract_config["DATA_ELEMENTS"].get("EXTRACTS", []):
+            if target_extract.get("EXTRACT_UID") == extract_id:
+                compute_exhaustivity_and_queue(
+                    pipeline_path=pipeline_path,
+                    extract_id=extract_id,
+                    exhaustivity_periods=exhaustivity_periods,
+                    push_queue=push_queue,
+                )
+                break
+        
         print("\n✅ Calcul d'exhaustivité terminé avec succès!")
+        
+        # Restore original function
+        pipeline.configure_logging = original_configure
         
         # Afficher les résultats (utiliser le même nom de dossier que extracts)
         if "Fosa" in extract_id:

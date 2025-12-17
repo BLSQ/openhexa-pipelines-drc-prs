@@ -330,7 +330,11 @@ def compute_exhaustivity_data(
         return
 
     current_run.log_info("Exhaustivity computation task started.")
-    configure_logging(logs_path=pipeline_path / "logs" / "compute", task_name="compute_exhaustivity")
+    try:
+        configure_logging(logs_path=pipeline_path / "logs" / "compute", task_name="compute_exhaustivity")
+    except Exception as e:
+        # If configure_logging fails (e.g., in test environment), continue anyway
+        current_run.log_warning(f"Could not configure logging: {e!s}")
 
     # Load extract config to get extracts and date range
     from utils import load_configuration
@@ -348,13 +352,17 @@ def compute_exhaustivity_data(
     
     # Compute exhaustivity for all extracts
     exhaustivity_periods = get_periods(start, end)
+    current_run.log_info(f"Processing {len(extract_config['DATA_ELEMENTS'].get('EXTRACTS', []))} extracts for {len(exhaustivity_periods)} periods")
     for target_extract in extract_config["DATA_ELEMENTS"].get("EXTRACTS", []):
+        extract_id = target_extract.get("EXTRACT_UID")
+        current_run.log_info(f"Computing exhaustivity for extract: {extract_id}")
         compute_exhaustivity_and_queue(
             pipeline_path=pipeline_path,
-            extract_id=target_extract.get("EXTRACT_UID"),
+            extract_id=extract_id,
             exhaustivity_periods=exhaustivity_periods,
             push_queue=push_queue,
         )
+        current_run.log_info(f"Completed exhaustivity computation for extract: {extract_id}")
 
 
 def compute_exhaustivity_and_queue(
@@ -435,7 +443,16 @@ def compute_exhaustivity_and_queue(
                     # Read all parquet files to get all org units
                     all_period_files = list(extracts_folder.glob("data_*.parquet"))
                     if all_period_files:
-                        all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
+                        # Read all files and normalize schemas before concatenation
+                        dfs_all = []
+                        for f in all_period_files:
+                            df_file = pl.read_parquet(f)
+                            # Normalize schema: ensure Null columns are cast to String
+                            for col in df_file.columns:
+                                if df_file[col].dtype == pl.Null:
+                                    df_file = df_file.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
+                            dfs_all.append(df_file)
+                        all_data = pl.concat(dfs_all, how="vertical_relaxed")
                         expected_org_units = all_data["ORG_UNIT"].unique().to_list()
                         current_run.log_info(
                             f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
@@ -464,14 +481,28 @@ def compute_exhaustivity_and_queue(
 
         # Save exhaustivity data per period
         current_run.log_info(f"Exhaustivity computation completed: {len(exhaustivity_df)} total combinations across all periods")
-        for period in exhaustivity_periods:
+        
+        # Get all periods from the result (may include periods not in exhaustivity_periods if data exists)
+        periods_in_result = sorted(exhaustivity_df["PERIOD"].unique().to_list()) if len(exhaustivity_df) > 0 else []
+        current_run.log_info(f"Periods in exhaustivity result: {periods_in_result}")
+        current_run.log_info(f"Periods requested: {exhaustivity_periods}")
+        
+        # Use periods from result if available, otherwise use requested periods
+        # This ensures we save files for all periods that have data (even if not in exhaustivity_periods)
+        # Also include all requested periods to ensure we create files even if they have no data (exhaustivity=0)
+        periods_to_save = sorted(set(periods_in_result + exhaustivity_periods))
+        current_run.log_info(f"Periods to save: {periods_to_save}")
+        
+        for period in periods_to_save:
             # Filter for the current period
             period_exhaustivity = exhaustivity_df.filter(pl.col("PERIOD") == period)
             
             if len(period_exhaustivity) == 0:
+                # With complete grid, this should not happen, but if it does, log and skip
                 current_run.log_warning(
                     f"No exhaustivity data computed for period {period}. "
-                    f"This may indicate missing data or configuration issues."
+                    f"This may indicate missing data or configuration issues. "
+                    f"Expected periods in result: {sorted(exhaustivity_df['PERIOD'].unique().to_list()) if len(exhaustivity_df) > 0 else []}"
                 )
                 continue
 
@@ -744,12 +775,20 @@ def update_dataset_org_units(
                 f"Syncing org units for '{mapping['extract_id']}': "
                 f"{mapping['source']} -> {mapping['target']}"
             )
-            push_dataset_org_units(
+            sync_result = push_dataset_org_units(
                 dhis2_client=dhis2_client,
                 source_dataset_id=mapping["source"],
                 target_dataset_id=mapping["target"],
                 dry_run=config["SETTINGS"].get("DRY_RUN", True),
             )
+            
+            # Check if sync failed
+            if sync_result and "error" in sync_result:
+                error_msg = f"Failed to sync org units for '{mapping['extract_id']}': {sync_result.get('error')}"
+                current_run.log_error(error_msg)
+                logging.error(error_msg)
+                # Continue with other mappings but log the error
+                continue
 
     except Exception as e:
         current_run.log_error("An error occurred during dataset org units update. Process stopped.")
@@ -783,6 +822,20 @@ def push_dataset_org_units(
     datasets = get_datasets(dhis2_client)
     source_dataset = datasets.filter(pl.col("id").is_in([source_dataset_id]))
     target_dataset = datasets.filter(pl.col("id").is_in([target_dataset_id]))
+    
+    # Validate that both datasets exist
+    if len(source_dataset) == 0:
+        error_msg = f"Source dataset {source_dataset_id} not found in DHIS2"
+        current_run.log_error(error_msg)
+        logging.error(error_msg)
+        return {"error": error_msg, "status_code": 404}
+    
+    if len(target_dataset) == 0:
+        error_msg = f"Target dataset {target_dataset_id} not found in DHIS2"
+        current_run.log_error(error_msg)
+        logging.error(error_msg)
+        return {"error": error_msg, "status_code": 404}
+    
     source_ous = source_dataset["organisation_units"].explode().to_list()
     target_ous = target_dataset["organisation_units"].explode().to_list()
 
@@ -992,11 +1045,16 @@ def push_data(
                 
                 df_mapped = mapper_func(df=df_final, extract_config=extract_config)
                 
-                # Check if mapped DataFrame is empty (df_mapped is pandas)
-                if len(df_mapped) == 0:
+                # Check if mapped DataFrame is empty (df_mapped is polars from apply_analytics_data_element_extract_config)
+                if df_mapped.is_empty() if hasattr(df_mapped, 'is_empty') else len(df_mapped) == 0:
                     current_run.log_warning(f"Mapped DataFrame is empty for {extract_id}, skipping push")
                     push_queue.dequeue()
                     continue
+                
+                # Ensure df_mapped is polars DataFrame (apply_analytics_data_element_extract_config returns pl.DataFrame)
+                if isinstance(df_mapped, pd.DataFrame):
+                    current_run.log_warning(f"Converting pandas DataFrame to polars for {extract_id}")
+                    df_mapped = pl.from_pandas(df_mapped)
                 
                 pusher.push_data(df_data=df_mapped)
             
