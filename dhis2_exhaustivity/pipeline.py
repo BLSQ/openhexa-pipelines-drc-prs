@@ -13,7 +13,7 @@ from d2d_library.dhis2_pusher import DHIS2Pusher
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
-from openhexa.toolbox.dhis2.dataframe import get_datasets, get_organisation_units
+from openhexa.toolbox.dhis2.dataframe import get_datasets
 from openhexa.toolbox.dhis2.periods import period_from_string
 from requests.exceptions import HTTPError, RequestException
 from utils import (
@@ -210,14 +210,14 @@ def handle_data_element_extracts(
 
     current_run.log_info("Starting data element extracts.")
     source_datasets = get_datasets(dhis2_extractor.dhis2_client)
-    full_pyramid = get_organisation_units(dhis2_extractor.dhis2_client)
+    # NOTE: We do NOT retrieve the full pyramid here - we retrieve org units per extract as needed
 
     # loop over the available extract configurations
     for idx, extract in enumerate(data_element_extracts):
         extract_id = extract.get("EXTRACT_UID")
         org_units_level = extract.get("ORG_UNITS_LEVEL", None)
         data_element_uids = extract.get("UIDS", [])
-        dataset_uid = extract.get("DATASET_UID")
+        dataset_orgunits_uid = extract.get("DATASET_ORGUNITS_UID")
 
         if extract_id is None:
             current_run.log_warning(
@@ -233,13 +233,17 @@ def handle_data_element_extracts(
             current_run.log_warning(f"No data elements defined for extract: {extract_id}, extract skipped.")
             continue
 
-        # get org units from the dataset directly if dataset_uid is provided, otherwise use org_units_level
-        if dataset_uid is not None:
-            source_dataset = source_datasets.filter(pl.col("id").is_in([dataset_uid]))
+        # get org units from the dataset directly if DATASET_ORGUNITS_UID is provided, otherwise use org_units_level
+        # NEVER retrieve full pyramid - always filter by dataset or level
+        if dataset_orgunits_uid is not None:
+            source_dataset = source_datasets.filter(pl.col("id").is_in([dataset_orgunits_uid]))
             org_units = source_dataset["organisation_units"].explode().to_list()
             dataset_name = source_dataset["name"][0] if len(source_dataset) > 0 else "Unknown"
         else:
-            org_units = full_pyramid.filter(pl.col("level") == org_units_level)["id"].to_list()
+            # Use retrieve_ou_list which filters by level directly (does NOT retrieve full pyramid)
+            # This is more efficient than retrieving full pyramid and filtering
+            from utils import retrieve_ou_list
+            org_units = retrieve_ou_list(dhis2_client=dhis2_extractor.dhis2_client, ou_level=org_units_level)
             dataset_name = f"Level {org_units_level}"
         
         # Limit org units for testing if MAX_ORG_UNITS_FOR_TEST is set in config
@@ -275,10 +279,16 @@ def handle_data_element_extracts(
                 )
 
             except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                # Log more details about the error
                 current_run.log_warning(
-                    f"Extract {extract_id} download failed for period {period}, continuing with next period."
+                    f"Extract {extract_id} download failed for period {period} ({error_type}): {error_msg[:200]}. Continuing with next period."
                 )
-                logging.error(f"Extract {extract_id} - period {period} error: {e!s}")
+                logging.error(f"Extract {extract_id} - period {period} error ({error_type}): {e!s}")
+                # Log full traceback for debugging
+                import traceback
+                logging.error(f"Full traceback for period {period}:\n{traceback.format_exc()}")
                 continue  # continue with next period instead of stopping the entire extract
 
         current_run.log_info(f"Extract {extract_id} finished.")
@@ -430,37 +440,75 @@ def compute_exhaustivity_and_queue(
         
         if extract_config_item:
             expected_dx_uids = extract_config_item.get("UIDS", [])
-            # Get expected org units: prefer from extract_config ORG_UNITS if available,
-            # otherwise from extracted data (all unique ORG_UNITs across all periods)
+            # Get expected org units: priority order:
+            # 1) extract_config.ORG_UNITS (explicit list)
+            # 2) SOURCE_DATASET_UID from push_config (org units from source dataset)
+            # 3) ORG_UNITS_LEVEL from extract_config (filter pyramid by level, NOT full pyramid)
+            # 4) extracted data (all unique ORG_UNITs across all periods) - last resort
             if extract_config_item.get("ORG_UNITS"):
                 expected_org_units = extract_config_item.get("ORG_UNITS")
                 current_run.log_info(
-                    f"Using {len(expected_org_units)} expected ORG_UNITs from extract_config"
+                    f"Using {len(expected_org_units)} expected ORG_UNITs from extract_config.ORG_UNITS"
                 )
             else:
-                # Fallback: get from extracted data
+                # Try to get from SOURCE_DATASET_UID in push_config (preferred method)
                 try:
-                    # Read all parquet files to get all org units
-                    all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                    if all_period_files:
-                        # Read all files and normalize schemas before concatenation
-                        dfs_all = []
-                        for f in all_period_files:
-                            df_file = pl.read_parquet(f)
-                            # Normalize schema: ensure Null columns are cast to String
-                            for col in df_file.columns:
-                                if df_file[col].dtype == pl.Null:
-                                    df_file = df_file.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
-                            dfs_all.append(df_file)
-                        all_data = pl.concat(dfs_all, how="vertical_relaxed")
-                        expected_org_units = all_data["ORG_UNIT"].unique().to_list()
-                        current_run.log_info(
-                            f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
-                            f"(no ORG_UNITS in extract_config)"
-                        )
+                    from utils import load_configuration
+                    push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+                    push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+                    source_dataset_uid = None
+                    for push_extract in push_extracts:
+                        if push_extract.get("EXTRACT_UID") == extract_id:
+                            source_dataset_uid = push_extract.get("SOURCE_DATASET_UID")
+                            break
+                    
+                    if source_dataset_uid:
+                        # Get org units from source dataset (more limited than full pyramid)
+                        from openhexa.toolbox.dhis2.dataframe import get_datasets
+                        from utils import connect_to_dhis2
+                        config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+                        dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
+                        datasets = get_datasets(dhis2_client)
+                        source_dataset = datasets.filter(pl.col("id").is_in([source_dataset_uid]))
+                        if len(source_dataset) > 0:
+                            expected_org_units = source_dataset["organisation_units"].explode().to_list()
+                            current_run.log_info(
+                                f"Using {len(expected_org_units)} ORG_UNITs from SOURCE_DATASET_UID "
+                                f"({source_dataset_uid}) in push_config"
+                            )
+                        else:
+                            raise ValueError(f"Source dataset {source_dataset_uid} not found")
+                    else:
+                        raise ValueError("No SOURCE_DATASET_UID found in push_config")
                 except Exception as e:
-                    current_run.log_warning(f"Could not determine expected org units: {e}")
-                    expected_org_units = None
+                    current_run.log_warning(
+                        f"Could not get org units from SOURCE_DATASET_UID: {e}. "
+                        f"Falling back to extracted data (never retrieving full pyramid)."
+                    )
+                    # Fallback: get from extracted data (NEVER retrieve full pyramid)
+                    # This ensures we never retrieve the full pyramid, only use what we already extracted
+                    try:
+                        # Read all parquet files to get all org units
+                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
+                        if all_period_files:
+                            # Read all files and normalize schemas before concatenation
+                            dfs_all = []
+                            for f in all_period_files:
+                                df_file = pl.read_parquet(f)
+                                # Normalize schema: ensure Null columns are cast to String
+                                for col in df_file.columns:
+                                    if df_file[col].dtype == pl.Null:
+                                        df_file = df_file.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
+                                dfs_all.append(df_file)
+                            all_data = pl.concat(dfs_all, how="vertical_relaxed")
+                            expected_org_units = all_data["ORG_UNIT"].unique().to_list()
+                            current_run.log_info(
+                                f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
+                                f"(last resort fallback)"
+                            )
+                    except Exception as e3:
+                        current_run.log_warning(f"Could not determine expected org units: {e3}")
+                        expected_org_units = None
         
         # Compute exhaustivity values for ALL periods at once
         # This ensures we detect missing periods and create a complete grid

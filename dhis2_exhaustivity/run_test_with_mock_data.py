@@ -206,8 +206,8 @@ def main():
     print("📝 CRÉATION DE DONNÉES MOCKÉES")
     print("=" * 80 + "\n")
     
-    # Utiliser le vrai extract_id (sans _test) pour que compute_exhaustivity_data le trouve
-    extract_id = "Fosa_exhaustivity_data_elements"
+    # Tester les deux extracts: Fosa et BCZ
+    extract_ids = ["Fosa_exhaustivity_data_elements", "BCZ_exhaustivity_data_elements"]
     
     # Créer des données pour plusieurs périodes (6 mois comme en production)
     from datetime import datetime
@@ -227,9 +227,11 @@ def main():
     
     print(f"📅 Périodes à créer: {len(periods)} ({start} à {end})")
     
-    # Créer des données pour chaque période
-    for period in periods:
-        create_mock_extract_data(pipeline_path, extract_id, period)
+    # Créer des données pour chaque extract et chaque période
+    for extract_id in extract_ids:
+        print(f"\n📊 Création de données pour: {extract_id}")
+        for period in periods:
+            create_mock_extract_data(pipeline_path, extract_id, period)
     
     print("\n" + "=" * 80)
     print("📊 CALCUL D'EXHAUSTIVITÉ")
@@ -263,16 +265,18 @@ def main():
         db_path = pipeline_path / "configuration" / ".queue.db"
         push_queue = Queue(db_path)
         
-        # Calculer l'exhaustivité pour chaque extract
+        # Calculer l'exhaustivité pour tous les extracts d'exhaustivité (Fosa et BCZ)
         for target_extract in extract_config["DATA_ELEMENTS"].get("EXTRACTS", []):
-            if target_extract.get("EXTRACT_UID") == extract_id:
+            extract_id_to_compute = target_extract.get("EXTRACT_UID")
+            # Ne traiter que les extracts d'exhaustivité
+            if extract_id_to_compute in extract_ids:
+                print(f"\n🔄 Calcul exhaustivity pour: {extract_id_to_compute}")
                 compute_exhaustivity_and_queue(
                     pipeline_path=pipeline_path,
-                    extract_id=extract_id,
+                    extract_id=extract_id_to_compute,
                     exhaustivity_periods=exhaustivity_periods,
                     push_queue=push_queue,
                 )
-                break
         
         print("\n✅ Calcul d'exhaustivité terminé avec succès!")
         
