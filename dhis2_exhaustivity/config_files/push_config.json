@@ -1088,6 +1088,18 @@
                         "ATTRIBUTE_OPTION_COMBO": {}
                     }
                 }
+            },
+            {
+                "EXTRACT_UID": "Fosa_exhaustivity_data_elements",
+                "SOURCE_DATASET_UID": null,
+                "TARGET_DATASET_UID": "kaxgZZLAwGf",
+                "MAPPINGS": {}
+            },
+            {
+                "EXTRACT_UID": "BCZ_exhaustivity_data_elements",
+                "SOURCE_DATASET_UID": null,
+                "TARGET_DATASET_UID": "tRMSUzNvN8e",
+                "MAPPINGS": {}
             }
         ] 
     },     

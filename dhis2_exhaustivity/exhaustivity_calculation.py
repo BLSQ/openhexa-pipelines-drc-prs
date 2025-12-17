@@ -120,21 +120,35 @@ def compute_exhaustivity(
         }
         missing_extracts = [k for k, v in files_to_read.items() if not v]
         
+        # If no files found, return empty DataFrame (will be filled with exhaustivity=0 in complete grid logic)
         if len(missing_extracts) == len(periods):
-            raise FileNotFoundError(f"No parquet files found for {periods} in {extracts_folder}")
-        
-        if missing_extracts:
             safe_log_warning(
-                f"Expected {len(periods)} parquet files for exhaustivity computation, "
-                f"but missing files for periods: {missing_extracts}."
+                f"No parquet files found for {periods} in {extracts_folder}. "
+                f"Will create exhaustivity=0 entries for all expected combinations."
             )
-        
-        try:
-            df = pl.concat([pl.read_parquet(f) for f in files_to_read.values() if f is not None])
-        except Exception as e:
-            raise RuntimeError(f"Error reading parquet files for exhaustivity computation: {e!s}") from e
+            df = pl.DataFrame({
+                "PERIOD": [],
+                "DX_UID": [],
+                "CATEGORY_OPTION_COMBO": [],
+                "ORG_UNIT": [],
+                "VALUE": [],
+                "VALUE_IS_NULL": [],
+            })
+        else:
+            if missing_extracts:
+                safe_log_warning(
+                    f"Expected {len(periods)} parquet files for exhaustivity computation, "
+                    f"but missing files for periods: {missing_extracts}."
+                )
+            
+            try:
+                df = pl.concat([pl.read_parquet(f) for f in files_to_read.values() if f is not None])
+            except Exception as e:
+                raise RuntimeError(f"Error reading parquet files for exhaustivity computation: {e!s}") from e
         
         # Apply mappings and filters from extract_config_item if provided
+        # Also try to load mappings from push_config if extract_config doesn't have mappings
+        mappings = {}
         if extract_config_item:
             # Filter by specific org units if provided
             org_units_filter = extract_config_item.get("ORG_UNITS")
@@ -142,41 +156,66 @@ def compute_exhaustivity(
                 df = df.filter(pl.col("ORG_UNIT").is_in(org_units_filter))
                 safe_log_info(f"Filtered by specific org units: {org_units_filter}")
             
+            # Try to get mappings from extract_config first
             mappings = extract_config_item.get("MAPPINGS", {})
-            if mappings:
-                safe_log_info(f"Applying mappings and filters from extract config for {extract_id}")
-                chunks = []
-                for uid, mapping in mappings.items():
-                    uid_mapping = mapping.get("UID")
-                    coc_mappings = mapping.get("CATEGORY_OPTION_COMBO", {})
+            
+            # If no mappings in extract_config, try to load from push_config
+            if not mappings and pipeline_path:
+                try:
+                    push_config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
+                    push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+                    # Collect all mappings from push_config
+                    for push_extract in push_extracts:
+                        push_mappings = push_extract.get("MAPPINGS", {})
+                        # Only include mappings for UIDs that are in this extract
+                        if extract_config_item.get("UIDS"):
+                            extract_uids = set(extract_config_item.get("UIDS", []))
+                            for uid, mapping in push_mappings.items():
+                                if uid in extract_uids:
+                                    mappings[uid] = mapping
+                        else:
+                            mappings.update(push_mappings)
                     
-                    # Filter by DX_UID
-                    df_uid = df.filter(pl.col("DX_UID") == uid)
-                    
-                    # Filter by COC if specified
-                    if coc_mappings:
-                        coc_mappings = {k: v for k, v in coc_mappings.items() if v is not None}
-                        coc_keys = list(coc_mappings.keys())
-                        df_uid = df_uid.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(coc_keys))
-                        # Replace COC values if mapping provided
-                        coc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in coc_mappings.items() if v is not None}
-                        if coc_mappings_clean:
-                            df_uid = df_uid.with_columns(
-                                pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
-                            )
-                    
-                    # Apply UID mapping if specified
-                    if uid_mapping:
-                        df_uid = df_uid.with_columns(
-                            pl.lit(uid_mapping).alias("DX_UID")
-                        )
-                    
-                    chunks.append(df_uid)
+                    if mappings:
+                        safe_log_info(f"Loaded mappings from push_config for {extract_id}: {len(mappings)} mappings")
+                except Exception as e:
+                    safe_log_warning(f"Could not load mappings from push_config: {e!s}")
+        
+        # Apply mappings if available
+        if mappings:
+            safe_log_info(f"Applying mappings and filters for {extract_id}: {len(mappings)} mappings")
+            chunks = []
+            for uid, mapping in mappings.items():
+                uid_mapping = mapping.get("UID")
+                coc_mappings = mapping.get("CATEGORY_OPTION_COMBO", {})
                 
-                if chunks:
-                    df = pl.concat(chunks)
-                else:
-                    df = pl.DataFrame()
+                # Filter by DX_UID
+                df_uid = df.filter(pl.col("DX_UID") == uid)
+                
+                # Filter by COC if specified
+                if coc_mappings:
+                    coc_mappings = {k: v for k, v in coc_mappings.items() if v is not None}
+                    coc_keys = list(coc_mappings.keys())
+                    df_uid = df_uid.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(coc_keys))
+                    # Replace COC values if mapping provided
+                    coc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in coc_mappings.items() if v is not None}
+                    if coc_mappings_clean:
+                        df_uid = df_uid.with_columns(
+                            pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
+                        )
+                
+                # Apply UID mapping if specified
+                if uid_mapping:
+                    df_uid = df_uid.with_columns(
+                        pl.lit(uid_mapping).alias("DX_UID")
+                    )
+                
+                chunks.append(df_uid)
+            
+            if chunks:
+                df = pl.concat(chunks)
+            else:
+                df = pl.DataFrame()
         
         # Check if dataframe is empty
         if len(df) == 0:
@@ -224,7 +263,7 @@ def compute_exhaustivity(
         # 1) Try to build expected DX_UIDs per COC from push_config mappings
         expected_dx_uids_by_coc: dict[str, list[str]] = {}
         try:
-            push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+            push_config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
             push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
             push_mappings: dict[str, dict] = {}
             for push_extract in push_extracts:
@@ -234,8 +273,14 @@ def compute_exhaustivity(
             # otherwise use DX_UIDs that appear in the data across all periods)
             if extract_config_item and extract_config_item.get("UIDS"):
                 relevant_dx_uids = set(extract_config_item.get("UIDS", []))
+                logging.info(
+                    f"Filtering DX_UIDs using extract_config: {len(relevant_dx_uids)} UIDs from config"
+                )
             else:
                 relevant_dx_uids = set(df_all_periods["DX_UID"].unique().to_list())
+                logging.info(
+                    f"Using DX_UIDs from data (no extract_config UIDS): {len(relevant_dx_uids)} UIDs found"
+                )
 
             expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
             for dx_uid, mapping in push_mappings.items():
@@ -343,14 +388,34 @@ def compute_exhaustivity(
         
         # Use ALL COCs from push_config (not just those in data)
         # This ensures we detect missing COCs even if they have no data
-        all_expected_cocs = set(expected_dx_uids_by_coc.keys())
+        # Priority: 1) push_config mappings, 2) COCs in data
+        all_expected_cocs = set(expected_dx_uids_by_coc.keys())  # COCs from push_config
         if cocs_in_data:
-            all_expected_cocs.update(cocs_in_data)
+            all_expected_cocs.update(cocs_in_data)  # Add COCs found in data
         all_expected_cocs = sorted(list(all_expected_cocs))
+        
+        # Log summary of what's being used
+        if expected_dx_uids_by_coc:
+            logging.info(
+                f"Using {len(all_expected_cocs)} COCs total: "
+                f"{len(expected_dx_uids_by_coc)} from push_config, "
+                f"{len(cocs_in_data)} found in data"
+            )
             
         # Use expected periods (from periods parameter) and expected ORG_UNITs
         expected_periods = periods if periods else periods_in_data
         expected_org_units_list = expected_org_units if expected_org_units else []
+        
+        # Log what's being used for the complete grid
+        if expected_org_units_list:
+            logging.info(
+                f"Using {len(expected_org_units_list)} ORG_UNITs from config/data for complete grid"
+            )
+        else:
+            logging.warning(
+                "No expected ORG_UNITs provided - complete grid will not be created, "
+                "only combinations with data will be included"
+            )
         
         # If we have expected periods and ORG_UNITs, create complete grid
         if expected_periods and expected_org_units_list:
@@ -460,7 +525,7 @@ def compute_and_log_exhaustivity(
         # Load configuration if not provided
         if extract_config is None:
             from utils import load_configuration
-            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+            extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
         
         # Get extract information
         target_extract = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])

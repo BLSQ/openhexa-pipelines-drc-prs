@@ -131,7 +131,7 @@ def extract_data(
     configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
 
     # load configuration
-    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
 
     # connect to source DHIS2 instance (No cache for data extraction)
     dhis2_client = connect_to_dhis2(
@@ -139,7 +139,7 @@ def extract_data(
     )
 
     # initialize queue
-    db_path = pipeline_path / "configuration" / ".queue.db"
+    db_path = pipeline_path / "config_files" / ".queue.db"
     push_queue = Queue(db_path)
 
     try:
@@ -337,7 +337,7 @@ def compute_exhaustivity_data(
 
     # Load extract config to get extracts and date range
     from utils import load_configuration
-    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
     
     # Get date range (same logic as extract_data)
     extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
@@ -381,7 +381,7 @@ def compute_exhaustivity_and_queue(
     """
     # Load config to get org units level for folder naming
     from utils import load_configuration
-    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
     
     # Find the extract configuration to determine folder name
     extract_config_item = None
@@ -417,135 +417,63 @@ def compute_exhaustivity_and_queue(
     # Clean summary file at the start for this extract
     
     try:
-        for period in exhaustivity_periods:
-            current_run.log_info(f"Computing exhaustivity for period: {period}.")
-            
-            # For exhaustivity, we need to read the data for the current period
-            period_file = extracts_folder / f"data_{period}.parquet"
-            
-            if not period_file.exists():
-                current_run.log_warning(f"Parquet file not found for period {period} in {extracts_folder}")
-                # If no data at all for this period, create entries with exhaustivity = 0 for all (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT) combinations
-                # Load extract config to get expected data elements and org units
-                from utils import load_configuration
-                extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
-                
-                # Find the extract configuration
-                extract_config_item = None
-                for extract_item in extract_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
-                    if extract_item.get("EXTRACT_UID") == extract_id:
-                        extract_config_item = extract_item
-                        break
-                
-                # Get expected org units and COCs from other periods' data
-                expected_org_units = None
-                expected_cocs = None
+        # Get expected DX_UIDs and ORG_UNITs from extract configuration
+        # Load extract config to get expected data elements
+        from utils import load_configuration
+        extract_config = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
+        
+        # Find the extract configuration
+        extract_config_item = None
+        for extract_item in extract_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
+            if extract_item.get("EXTRACT_UID") == extract_id:
+                extract_config_item = extract_item
+                break
+        
+        expected_dx_uids = None
+        expected_org_units = None
+        
+        if extract_config_item:
+            expected_dx_uids = extract_config_item.get("UIDS", [])
+            # Get expected org units: prefer from extract_config ORG_UNITS if available,
+            # otherwise from extracted data (all unique ORG_UNITs across all periods)
+            if extract_config_item.get("ORG_UNITS"):
+                expected_org_units = extract_config_item.get("ORG_UNITS")
+                current_run.log_info(
+                    f"Using {len(expected_org_units)} expected ORG_UNITs from extract_config"
+                )
+            else:
+                # Fallback: get from extracted data
                 try:
-                    # Read all parquet files to get all org units and COCs
+                    # Read all parquet files to get all org units
                     all_period_files = list(extracts_folder.glob("data_*.parquet"))
                     if all_period_files:
                         all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
                         expected_org_units = all_data["ORG_UNIT"].unique().to_list()
-                        expected_cocs = all_data["CATEGORY_OPTION_COMBO"].unique().to_list()
-                except Exception as e:
-                    current_run.log_warning(f"Could not determine expected org units and COCs: {e}")
-                    
-                if expected_org_units and expected_cocs:
-                    # Create a complete grid of (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT) with exhaustivity = 0
-                    all_combinations = []
-                    for coc in expected_cocs:
-                        for org_unit in expected_org_units:
-                            all_combinations.append({
-                                "PERIOD": period,
-                                "CATEGORY_OPTION_COMBO": coc,
-                                "ORG_UNIT": org_unit,
-                                "EXHAUSTIVITY_VALUE": 0,
-                            })
-                    
-                    missing_data_df = pl.DataFrame(all_combinations)
-                    
-                    # Save exhaustivity data in simplified format: only COC, PERIOD, ORG_UNIT, EXHAUSTIVITY_VALUE
-                    missing_data_simplified = missing_data_df.select([
-                        "PERIOD",
-                        "CATEGORY_OPTION_COMBO",
-                        "ORG_UNIT",
-                        "EXHAUSTIVITY_VALUE"
-                    ])
-                    
-                    try:
-                        save_to_parquet(
-                            data=missing_data_simplified.to_pandas(),
-                            filename=output_dir / f"exhaustivity_{period}.parquet",
-                        )
-                        push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
                         current_run.log_info(
-                            f"Created exhaustivity entries with value 0 for {len(expected_cocs)} COCs "
-                            f"and {len(expected_org_units)} ORG_UNITs ({len(all_combinations)} combinations, no data for period {period})"
+                            f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
+                            f"(no ORG_UNITS in extract_config)"
                         )
-                    except Exception as e:
-                        logging.error(f"Exhaustivity saving error: {e!s}")
-                        current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
-                else:
-                    current_run.log_warning(
-                        f"No org units or COCs found from other periods for extract {extract_id}, "
-                        f"cannot create exhaustivity entries for period {period}"
-                    )
-                continue
+                except Exception as e:
+                    current_run.log_warning(f"Could not determine expected org units: {e}")
+                    expected_org_units = None
+        
+        # Compute exhaustivity values for ALL periods at once
+        # This ensures we detect missing periods and create a complete grid
+        # Returns DataFrame with PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
+        current_run.log_info(f"Computing exhaustivity for {len(exhaustivity_periods)} periods: {exhaustivity_periods}")
+        exhaustivity_df = compute_exhaustivity(
+            pipeline_path=pipeline_path,
+            extract_id=extract_id,
+            periods=exhaustivity_periods,  # Pass all periods
+            expected_dx_uids=expected_dx_uids,
+            expected_org_units=expected_org_units,
+            extract_config_item=extract_config_item,
+            extracts_folder=extracts_folder,
+        )
 
-            # Get expected DX_UIDs and ORG_UNITs from extract configuration
-            # Load extract config to get expected data elements
-            from utils import load_configuration
-            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
-            
-            # Find the extract configuration
-            extract_config_item = None
-            for extract_item in extract_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
-                if extract_item.get("EXTRACT_UID") == extract_id:
-                    extract_config_item = extract_item
-                    break
-            
-            expected_dx_uids = None
-            expected_org_units = None
-            
-            if extract_config_item:
-                expected_dx_uids = extract_config_item.get("UIDS", [])
-                # Get expected org units: prefer from extract_config ORG_UNITS if available,
-                # otherwise from extracted data (all unique ORG_UNITs across all periods)
-                if extract_config_item.get("ORG_UNITS"):
-                    expected_org_units = extract_config_item.get("ORG_UNITS")
-                    current_run.log_info(
-                        f"Using {len(expected_org_units)} expected ORG_UNITs from extract_config"
-                    )
-                else:
-                    # Fallback: get from extracted data
-                    try:
-                        # Read all parquet files to get all org units
-                        all_period_files = list(extracts_folder.glob("data_*.parquet"))
-                        if all_period_files:
-                            all_data = pl.concat([pl.read_parquet(f) for f in all_period_files])
-                            expected_org_units = all_data["ORG_UNIT"].unique().to_list()
-                            current_run.log_info(
-                                f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
-                                f"(no ORG_UNITS in extract_config)"
-                            )
-                    except Exception as e:
-                        current_run.log_warning(f"Could not determine expected org units: {e}")
-                        expected_org_units = None
-            
-            # Compute exhaustivity values for ALL periods (not just current period)
-            # This ensures we detect missing periods
-            # Returns DataFrame with PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
-            exhaustivity_df = compute_exhaustivity(
-                pipeline_path=pipeline_path,
-                extract_id=extract_id,
-                periods=exhaustivity_periods,  # Pass all periods, not just current
-                expected_dx_uids=expected_dx_uids,
-                expected_org_units=expected_org_units,
-                extract_config_item=extract_config_item,
-                extracts_folder=extracts_folder,
-            )
-
-            # Filter for the current period (in case multiple periods were processed)
+        # Save exhaustivity data per period
+        for period in exhaustivity_periods:
+            # Filter for the current period
             period_exhaustivity = exhaustivity_df.filter(pl.col("PERIOD") == period)
             
             if len(period_exhaustivity) == 0:
@@ -566,6 +494,7 @@ def compute_exhaustivity_and_queue(
                     filename=output_dir / f"exhaustivity_{period}.parquet",
                 )
                 push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
+                current_run.log_info(f"Saved exhaustivity data for period {period}: {len(period_exhaustivity)} combinations")
             except Exception as e:
                 logging.error(f"Exhaustivity saving error: {e!s}")
                 current_run.log_error(f"Error saving exhaustivity parquet file for period {period}.")
@@ -611,7 +540,7 @@ def format_for_exhaustivity_import(
     if pipeline_path:
         try:
             from utils import load_configuration
-            push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+            push_config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
             push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
             push_mappings: dict[str, dict] = {}
             for push_extract in push_extracts:
@@ -781,32 +710,36 @@ def update_dataset_org_units(
         # Copy org units from source datasets to target datasets (both in the same DHIS2 instance)
         # Read all dataset mappings from push_config.json
         configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
-        config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+        config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
         prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
         dhis2_client = connect_to_dhis2(connection_str=prs_conn, cache_dir=None)
 
-        # Collect all dataset mappings from extracts that have both SOURCE_DATASET_UID and TARGET_DATASET_UID
+        # Collect all dataset mappings from extracts that have TARGET_DATASET_UID
+        # This includes both regular extracts and exhaustivity extracts
         dataset_mappings = []
         for extract in config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
             source_ds = extract.get("SOURCE_DATASET_UID")
             target_ds = extract.get("TARGET_DATASET_UID")
-            if source_ds and target_ds:
-                dataset_mappings.append({
-                    "source": source_ds,
-                    "target": target_ds,
-                    "extract_id": extract.get("EXTRACT_UID", "unknown")
-                })
-
-        # Also add the hardcoded mapping for exhaustivity dataset if not already in config
-        # wMCnDAQfGZN (PRS C- SIGL FOSA-Import SNIS) -> uuoQdHIDMTB (PRS Exhaustivity - OpenHexa)
-        exhaustivity_mapping = {
-            "source": "wMCnDAQfGZN",
-            "target": "uuoQdHIDMTB",
-            "extract_id": "exhaustivity"
-        }
-        # Only add if not already present
-        if not any(m["target"] == "uuoQdHIDMTB" for m in dataset_mappings):
-            dataset_mappings.append(exhaustivity_mapping)
+            extract_id = extract.get("EXTRACT_UID", "unknown")
+            
+            # For exhaustivity extracts, we only need TARGET_DATASET_UID (no source dataset sync needed)
+            # For regular extracts, we need both SOURCE_DATASET_UID and TARGET_DATASET_UID
+            if target_ds:
+                if "exhaustivity" in extract_id.lower():
+                    # Exhaustivity extracts: use the target dataset directly (no source to copy from)
+                    # We still add it to the list but with source=None to indicate it's an exhaustivity dataset
+                    dataset_mappings.append({
+                        "source": None,  # No source dataset for exhaustivity
+                        "target": target_ds,
+                        "extract_id": extract_id
+                    })
+                elif source_ds:
+                    # Regular extracts: copy org units from source to target
+                    dataset_mappings.append({
+                        "source": source_ds,
+                        "target": target_ds,
+                        "extract_id": extract_id
+                    })
 
         if not dataset_mappings:
             current_run.log_warning("No dataset mappings found. Skipping dataset org units sync.")
@@ -816,6 +749,15 @@ def update_dataset_org_units(
         
         # Sync each dataset mapping
         for mapping in dataset_mappings:
+            # Skip exhaustivity extracts that don't have a source dataset
+            # (they will be handled separately if needed)
+            if mapping["source"] is None:
+                current_run.log_info(
+                    f"Skipping org units sync for exhaustivity extract '{mapping['extract_id']}': "
+                    f"no source dataset specified (target: {mapping['target']})"
+                )
+                continue
+                
             current_run.log_info(
                 f"Syncing org units for '{mapping['extract_id']}': "
                 f"{mapping['source']} -> {mapping['target']}"
@@ -913,7 +855,7 @@ def push_data(
 
     # setup
     configure_logging(logs_path=pipeline_path / "logs" / "push", task_name="push_data")
-    config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+    config = load_configuration(config_path=pipeline_path / "config_files" / "push_config.json")
     dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
     db_path = pipeline_path / "configuration" / ".queue.db"
     push_queue = Queue(db_path)
@@ -985,7 +927,7 @@ def push_data(
                 
                 # Load extract config to get expected DX_UIDs
                 from utils import load_configuration
-                extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+                extract_config_full = load_configuration(config_path=pipeline_path / "config_files" / "extract_config.json")
                 extract_config_item = next(
                     (e for e in extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", []) 
                      if e.get("EXTRACT_UID") == extract_id), 
