@@ -1,7 +1,7 @@
 import json
 import logging
 
-import pandas as pd
+import polars as pl
 import requests
 from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2 import DHIS2
@@ -35,12 +35,12 @@ class DHIS2PyramidAligner:
     def align_to(
         self,
         target_dhis2: DHIS2,
-        source_pyramid: pd.DataFrame,
+        source_pyramid: pl.DataFrame,
         dry_run: bool = True,
     ):
         """Syncs the extracted pyramid data with the target DHIS2 instance."""
         # Load the target pyramid
-        if source_pyramid.empty:
+        if source_pyramid.is_empty():
             current_run.log_warning("Source pyramid is empty. Organisation units alignment skipped.")
             return
 
@@ -50,13 +50,15 @@ class DHIS2PyramidAligner:
         target_pyramid = target_dhis2.meta.organisation_units(
             fields="id,name,shortName,openingDate,closedDate,parent,level,path,geometry"
         )
-        target_pyramid = pd.DataFrame(target_pyramid)
+        target_pyramid = pl.DataFrame(target_pyramid)
         current_run.log_debug(f"Shape target pyramid: {target_pyramid.shape}")
         current_run.log_info(f"Run org units sync with dry_run: {dry_run}")
 
         # Select new OU: all OU in source not in target (set difference)
-        ou_new = list(set(source_pyramid.id) - set(target_pyramid.id))
-        ou_to_create = source_pyramid[source_pyramid.id.isin(ou_new)]
+        source_ids = set(source_pyramid["id"].to_list())
+        target_ids = set(target_pyramid["id"].to_list())
+        ou_new = list(source_ids - target_ids)
+        ou_to_create = source_pyramid.filter(pl.col("id").is_in(ou_new))
         self._push_org_units_create(
             ou_to_create=ou_to_create,
             target_dhis2=target_dhis2,
@@ -64,7 +66,7 @@ class DHIS2PyramidAligner:
         )
 
         # Select matching OU: all OU uid that match between DHIS2 source and target (set intersection)
-        matching_ou_ids = list(set(source_pyramid.id).intersection(set(target_pyramid.id)))
+        matching_ou_ids = list(source_ids.intersection(target_ids))
         self._push_org_units_update(
             org_unit_source=source_pyramid,
             org_unit_target=target_pyramid,
@@ -74,12 +76,12 @@ class DHIS2PyramidAligner:
         )
         current_run.log_info("Organisation units push finished.")
 
-    def _push_org_units_create(self, ou_to_create: pd.DataFrame, target_dhis2: DHIS2, dry_run: bool) -> None:
+    def _push_org_units_create(self, ou_to_create: pl.DataFrame, target_dhis2: DHIS2, dry_run: bool) -> None:
         """Create organisation units in the target DHIS2 instance.
 
         Parameters
         ----------
-        ou_to_create : pd.DataFrame
+        ou_to_create : pl.DataFrame
             DataFrame containing organisation unit data to be created.
         target_dhis2 : DHIS2
             DHIS2 client for the target instance.
@@ -92,20 +94,20 @@ class DHIS2PyramidAligner:
         attempts to create them in the target DHIS2.
         Logs errors and information about the creation process.
         """
-        if not ou_to_create.shape[0] > 0:
+        if ou_to_create.is_empty():
             current_run.log_info("No new organisation units to create.")
             return
 
         try:
             # NOTE: Geometry is valid for versions > 2.32
             if target_dhis2.version <= "2.32":
-                ou_to_create["geometry"] = None
+                ou_to_create = ou_to_create.with_columns(pl.lit(None).alias("geometry"))
                 current_run.log_warning("DHIS2 version not compatible with geometry. Geometry will not be pushed.")
 
             current_run.log_info(f"Creating {len(ou_to_create)} organisation units.")
             errors_count = 0
-            for row_tuple in ou_to_create.itertuples(index=False, name="OrgUnitRow"):
-                ou = OrgUnitObj(row_tuple)
+            for row_dict in ou_to_create.iter_rows(named=True):
+                ou = OrgUnitObj(row_dict)
                 if ou.is_valid():
                     response = self._push_org_unit(
                         dhis2_client=target_dhis2,
@@ -127,7 +129,7 @@ class DHIS2PyramidAligner:
                                 "statusCode": None,
                                 "status": "NOTVALID",
                                 "response": None,
-                                "ou_id": row_tuple.id,
+                                "ou_id": row_dict["id"],
                             }
                         )
                     )
@@ -142,14 +144,14 @@ class DHIS2PyramidAligner:
 
     def _push_org_units_update(
         self,
-        org_unit_source: pd.DataFrame,
-        org_unit_target: pd.DataFrame,
+        org_unit_source: pl.DataFrame,
+        org_unit_target: pl.DataFrame,
         ou_ids_to_check: list[str],
         target_dhis2: DHIS2,
         dry_run: bool,
     ):
         """Update org units based on matching id list."""
-        if not len(ou_ids_to_check) > 0:
+        if len(ou_ids_to_check) == 0:
             current_run.log_info("No organisation units to update.")
             return
 
@@ -157,8 +159,8 @@ class DHIS2PyramidAligner:
             current_run.log_info(f"Checking for updates in {len(ou_ids_to_check)} organisation units.")
             # NOTE: Geometry is valid for versions > 2.32
             if target_dhis2.version <= "2.32":
-                org_unit_source["geometry"] = None
-                org_unit_target["geometry"] = None
+                org_unit_source = org_unit_source.with_columns(pl.lit(None).alias("geometry"))
+                org_unit_target = org_unit_target.with_columns(pl.lit(None).alias("geometry"))
                 current_run.log_warning("DHIS2 version not compatible with geometry. Geometry will be ignored.")
 
             # build id dictionary (faster) to compare source vs target OU
@@ -172,8 +174,8 @@ class DHIS2PyramidAligner:
 
                 # Create the OU and check if there are differences
                 # NOTE: See OrgUnitObj._eq_() to check the comparison logic
-                ou_source = OrgUnitObj(org_unit_source.iloc[indices["source"]])
-                ou_target = OrgUnitObj(org_unit_target.iloc[indices["target"]])
+                ou_source = OrgUnitObj(org_unit_source[indices["source"]].to_dicts()[0])
+                ou_target = OrgUnitObj(org_unit_target[indices["target"]].to_dicts()[0])
 
                 if ou_source != ou_target:
                     response = self._push_org_unit(
@@ -234,7 +236,7 @@ class DHIS2PyramidAligner:
             r = Response()
             r.status_code = 200
             r.headers = CaseInsensitiveDict({"Content-Type": "application/json"})
-            r._content = json.dumps().encode("utf-8")  # private attr used internally
+            r._content = json.dumps(payload).encode("utf-8")  # private attr used internally
         else:
             if strategy == "CREATE":
                 endpoint = "organisationUnits"
@@ -277,14 +279,14 @@ class DHIS2PyramidAligner:
             "ou_id": ou_id,
         }
 
-    def _build_id_indexes(self, ou_source: pd.DataFrame, ou_target: pd.DataFrame, ou_matching_ids: list) -> dict:
+    def _build_id_indexes(self, ou_source: pl.DataFrame, ou_target: pl.DataFrame, ou_matching_ids: list) -> dict:
         """Build a dictionary mapping matching OU IDs to their index positions in source and target DataFrames.
 
         Parameters
         ----------
-        ou_source : pd.DataFrame
+        ou_source : pl.DataFrame
             Source DataFrame containing organisation units with an 'id' column.
-        ou_target : pd.DataFrame
+        ou_target : pl.DataFrame
             Target DataFrame containing organisation units with an 'id' column.
         ou_matching_ids : list
             List of organisation unit IDs to match between source and target.
@@ -294,9 +296,9 @@ class DHIS2PyramidAligner:
         dict
             Dictionary where keys are matching IDs and values are dicts with 'source' and 'target' index positions.
         """
-        # Set "id" as the index for faster lookup
-        df1_lookup = {val: idx for idx, val in enumerate(ou_source["id"])}
-        df2_lookup = {val: idx for idx, val in enumerate(ou_target["id"])}
+        # Build lookup dictionaries for faster lookup
+        df1_lookup = {val: idx for idx, val in enumerate(ou_source["id"].to_list())}
+        df2_lookup = {val: idx for idx, val in enumerate(ou_target["id"].to_list())}
 
         # Build the dictionary using prebuilt lookups
         return {

@@ -1,7 +1,7 @@
 import json
 from typing import NamedTuple
 
-import pandas as pd
+import polars as pl
 
 
 class OrgUnitRow(NamedTuple):
@@ -21,18 +21,18 @@ class OrgUnitRow(NamedTuple):
 class OrgUnitObj:  # noqa: PLW1641 (no hashing)
     """Helper class definition to store/create the correct OrgUnit JSON format."""
 
-    def __init__(self, org_unit: OrgUnitRow | pd.Series | tuple):
+    def __init__(self, org_unit: OrgUnitRow | dict | tuple):
         """Create a new org unit instance.
 
         Parameters
         ----------
-        org_unit : OrgUnitRow | pd.Series
+        org_unit : OrgUnitRow | dict
             The organizational unit data.
             Expects columns with names :
                 ['id', 'name', 'shortName', 'openingDate', 'closedDate', 'parent','level', 'path', 'geometry']
         """
-        if isinstance(org_unit, pd.Series):
-            # Convert Series to OrgUnitRow
+        if isinstance(org_unit, dict):
+            # Convert dict to OrgUnitRow
             org_unit = OrgUnitRow(
                 id=org_unit["id"],
                 name=org_unit["name"],
@@ -47,7 +47,7 @@ class OrgUnitObj:  # noqa: PLW1641 (no hashing)
         elif isinstance(org_unit, tuple) and hasattr(org_unit, "_fields"):
             org_unit = OrgUnitRow(**org_unit._asdict())
         elif not isinstance(org_unit, OrgUnitRow):
-            raise TypeError(f"Expected OrgUnitRow, pd.Series, or tuple, got {type(org_unit)}")
+            raise TypeError(f"Expected OrgUnitRow, dict, or tuple, got {type(org_unit)}")
 
         self.initialize_from(org_unit_tuple=org_unit)
 

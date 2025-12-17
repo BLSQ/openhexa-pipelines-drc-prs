@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2 import DHIS2
 
@@ -55,7 +55,7 @@ class AnanalyticsDataElementExtractor:
         except Exception as e:
             raise Exception(f"Extract data elements download error : {e}") from e
 
-    def _retrieve_data(self, data_elements: list[str], org_units: list[str], period: str) -> pd.DataFrame:
+    def _retrieve_data(self, data_elements: list[str], org_units: list[str], period: str) -> pl.DataFrame:
         if not self.extractor._valid_dhis2_period_format(period):
             raise ValueError(f"Invalid DHIS2 period format: {period}")
         try:
@@ -68,41 +68,42 @@ class AnanalyticsDataElementExtractor:
         except Exception as e:
             raise Exception(f"Error retrieving data elements data: {e}") from e
 
-        return self._map_to_dhis2_format_analytics(pd.DataFrame(response))
+        return self._map_to_dhis2_format_analytics(pl.DataFrame(response))
 
     def _map_to_dhis2_format_analytics(
         self,
-        data: pd.DataFrame,
-    ) -> pd.DataFrame:
-        if data.empty:
-            return None
+        data: pl.DataFrame,
+    ) -> pl.DataFrame:
+        # Return empty DataFrame with correct schema instead of None
+        empty_schema = {
+            "DATA_TYPE": pl.Utf8,
+            "DX_UID": pl.Utf8,
+            "PERIOD": pl.Utf8,
+            "ORG_UNIT": pl.Utf8,
+            "CATEGORY_OPTION_COMBO": pl.Utf8,
+            "ATTRIBUTE_OPTION_COMBO": pl.Utf8,
+            "RATE_TYPE": pl.Utf8,
+            "DOMAIN_TYPE": pl.Utf8,
+            "VALUE": pl.Utf8,
+        }
+        
+        if data.is_empty():
+            return pl.DataFrame(schema=empty_schema)
 
         try:
-            data_format = pd.DataFrame(
-                columns=[
-                    "DATA_TYPE",
-                    "DX_UID",
-                    "PERIOD",
-                    "ORG_UNIT",
-                    "CATEGORY_OPTION_COMBO",
-                    "ATTRIBUTE_OPTION_COMBO",
-                    "RATE_TYPE",
-                    "DOMAIN_TYPE",
-                    "VALUE",
-                ]
-            )
-
-            data_format["DX_UID"] = data.dx
-            data_format["PERIOD"] = data.pe
-            data_format["ORG_UNIT"] = data.ou
-            data_format["CATEGORY_OPTION_COMBO"] = data.co
-            data_format["DOMAIN_TYPE"] = "AGGREGATED"
-            data_format["VALUE"] = data.value
-            data_format["DATA_TYPE"] = "DATA_ELEMENT"
+            data_format = pl.DataFrame({
+                "DX_UID": data["dx"],
+                "PERIOD": data["pe"],
+                "ORG_UNIT": data["ou"],
+                "CATEGORY_OPTION_COMBO": data["co"],
+                "DOMAIN_TYPE": pl.lit("AGGREGATED"),
+                "VALUE": data["value"],
+                "DATA_TYPE": pl.lit("DATA_ELEMENT"),
+                "ATTRIBUTE_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
+                "RATE_TYPE": pl.lit(None, dtype=pl.Utf8),
+            })
             return data_format
 
-        except AttributeError as e:
-            raise AttributeError(f"missing extract data, required attribute for format: {e}") from e
         except Exception as e:
             raise Exception(f"Unexpected Error while creating extract format table: {e}") from e
 
@@ -154,7 +155,7 @@ class DataElementsExtractor:
         except Exception as e:
             raise Exception(f"Extract data elements download error : {e}") from e
 
-    def _retrieve_data(self, data_elements: list[str], org_units: list[str], period: str) -> pd.DataFrame:
+    def _retrieve_data(self, data_elements: list[str], org_units: list[str], period: str) -> pl.DataFrame:
         if not self.extractor._valid_dhis2_period_format(period):
             raise ValueError(f"Invalid DHIS2 period format: {period}")
         try:
@@ -167,7 +168,7 @@ class DataElementsExtractor:
         except Exception as e:
             raise Exception(f"Error retrieving data elements data: {e}") from e
 
-        return self.extractor._map_to_dhis2_format(pd.DataFrame(response), data_type="DATA_ELEMENT")
+        return self.extractor._map_to_dhis2_format(pl.DataFrame(response), data_type="DATA_ELEMENT")
 
 
 class IndicatorsExtractor:
@@ -217,7 +218,7 @@ class IndicatorsExtractor:
         except Exception as e:
             raise Exception(f"Extract indicators download error : {e}") from e
 
-    def _retrieve_data(self, indicators: list[str], org_units: list[str], period: str) -> pd.DataFrame:
+    def _retrieve_data(self, indicators: list[str], org_units: list[str], period: str) -> pl.DataFrame:
         if not self.extractor._valid_dhis2_period_format(period):
             raise ValueError(f"Invalid DHIS2 period format: {period}")
         try:
@@ -230,7 +231,7 @@ class IndicatorsExtractor:
         except Exception as e:
             raise Exception(f"Error retrieving indicators data: {e}") from e
 
-        raw_data_formatted = pd.DataFrame(response).rename(columns={"pe": "period", "ou": "orgUnit"})
+        raw_data_formatted = pl.DataFrame(response).rename({"pe": "period", "ou": "orgUnit"})
         return self.extractor._map_to_dhis2_format(raw_data_formatted, data_type="INDICATOR")
 
 
@@ -286,7 +287,7 @@ class ReportingRatesExtractor:
         except Exception as e:
             raise Exception(f"Extract reporting rates download error : {e}") from e
 
-    def _retrieve_data(self, reporting_rates: list[str], org_units: list[str], period: str) -> pd.DataFrame:
+    def _retrieve_data(self, reporting_rates: list[str], org_units: list[str], period: str) -> pl.DataFrame:
         if not self.extractor._valid_dhis2_period_format(period):
             raise ValueError(f"Invalid DHIS2 period format: {period}")
         try:
@@ -299,7 +300,7 @@ class ReportingRatesExtractor:
         except Exception as e:
             raise Exception(f"Error retrieving reporting rates data: {e}") from e
 
-        raw_data_formatted = pd.DataFrame(response).rename(columns={"pe": "period", "ou": "orgUnit"})
+        raw_data_formatted = pl.DataFrame(response).rename({"pe": "period", "ou": "orgUnit"})
         return self.extractor._map_to_dhis2_format(raw_data_formatted, data_type="REPORTING_RATE")
 
 
@@ -380,15 +381,15 @@ class DHIS2Extractor:
 
     def _map_to_dhis2_format(
         self,
-        dhis_data: pd.DataFrame,
+        dhis_data: pl.DataFrame,
         data_type: str = "DATA_ELEMENT",
         domain_type: str = "AGGREGATED",
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """Maps DHIS2 data to a standardized data extraction table.
 
         Parameters
         ----------
-        dhis_data : pd.DataFrame
+        dhis_data : pl.DataFrame
             Input DataFrame containing DHIS2 data. Must include columns like `period`, `orgUnit`,
             `categoryOptionCombo(DATA_ELEMENT)`, `attributeOptionCombo(DATA_ELEMENT)`, `dataElement`
             and `value` based on the data type.
@@ -405,7 +406,7 @@ class DHIS2Extractor:
 
         Returns
         -------
-        pd.DataFrame
+        pl.DataFrame
             A DataFrame formatted to SNIS standards, with the following columns:
             - "DATA_TYPE": The type of data (DATA_ELEMENT, REPORTING_RATE, or INDICATOR).
             - "DX_UID": Data element, dataset, or indicator UID.
@@ -416,43 +417,62 @@ class DHIS2Extractor:
             - "DOMAIN_TYPE": Data domain (AGGREGATED or TRACKER).
             - "VALUE": Data value.
         """
-        if dhis_data.empty:
-            return None
+        # Return empty DataFrame with correct schema instead of None
+        empty_schema = {
+            "DATA_TYPE": pl.Utf8,
+            "DX_UID": pl.Utf8,
+            "PERIOD": pl.Utf8,
+            "ORG_UNIT": pl.Utf8,
+            "CATEGORY_OPTION_COMBO": pl.Utf8,
+            "ATTRIBUTE_OPTION_COMBO": pl.Utf8,
+            "RATE_TYPE": pl.Utf8,
+            "DOMAIN_TYPE": pl.Utf8,
+            "VALUE": pl.Utf8,
+        }
+        
+        if dhis_data.is_empty():
+            return pl.DataFrame(schema=empty_schema)
 
         if data_type not in ["DATA_ELEMENT", "REPORTING_RATE", "INDICATOR"]:
             raise ValueError("Incorrect 'data_type' configuration ('DATA_ELEMENT', 'REPORTING_RATE', 'INDICATOR').")
 
         try:
-            data_format = pd.DataFrame(
-                columns=[
-                    "DATA_TYPE",
-                    "DX_UID",
-                    "PERIOD",
-                    "ORG_UNIT",
-                    "CATEGORY_OPTION_COMBO",
-                    "ATTRIBUTE_OPTION_COMBO",
-                    "RATE_TYPE",
-                    "DOMAIN_TYPE",
-                    "VALUE",
-                ]
-            )
-            data_format["PERIOD"] = dhis_data.period
-            data_format["ORG_UNIT"] = dhis_data.orgUnit
-            data_format["DOMAIN_TYPE"] = domain_type
-            data_format["VALUE"] = dhis_data.value
-            data_format["DATA_TYPE"] = data_type
+            base_cols = {
+                "PERIOD": dhis_data["period"],
+                "ORG_UNIT": dhis_data["orgUnit"],
+                "DOMAIN_TYPE": pl.lit(domain_type),
+                "VALUE": dhis_data["value"],
+                "DATA_TYPE": pl.lit(data_type),
+            }
+            
             if data_type == "DATA_ELEMENT":
-                data_format["DX_UID"] = dhis_data.dataElement
-                data_format["CATEGORY_OPTION_COMBO"] = dhis_data.categoryOptionCombo
-                data_format["ATTRIBUTE_OPTION_COMBO"] = dhis_data.attributeOptionCombo
+                data_format = pl.DataFrame({
+                    **base_cols,
+                    "DX_UID": dhis_data["dataElement"],
+                    "CATEGORY_OPTION_COMBO": dhis_data["categoryOptionCombo"],
+                    "ATTRIBUTE_OPTION_COMBO": dhis_data["attributeOptionCombo"],
+                    "RATE_TYPE": pl.lit(None, dtype=pl.Utf8),
+                })
             elif data_type == "REPORTING_RATE":
-                data_format[["DX_UID", "RATE_TYPE"]] = dhis_data.dx.str.split(".", expand=True)
+                # Split dx column by "." to get DX_UID and RATE_TYPE
+                split_col = dhis_data["dx"].str.split(".", inclusive=False)
+                data_format = pl.DataFrame({
+                    **base_cols,
+                    "DX_UID": split_col.list.get(0),
+                    "RATE_TYPE": split_col.list.get(1),
+                    "CATEGORY_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
+                    "ATTRIBUTE_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
+                })
             elif data_type == "INDICATOR":
-                data_format["DX_UID"] = dhis_data.dx
+                data_format = pl.DataFrame({
+                    **base_cols,
+                    "DX_UID": dhis_data["dx"],
+                    "CATEGORY_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
+                    "ATTRIBUTE_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
+                    "RATE_TYPE": pl.lit(None, dtype=pl.Utf8),
+                })
             return data_format
 
-        except AttributeError as e:
-            raise AttributeError(f"missing extract data, required attribute for format: {e}") from e
         except Exception as e:
             raise Exception(f"Unexpected Error while creating extract format table: {e}") from e
 
@@ -468,21 +488,21 @@ class DHIS2Extractor:
         return True
 
     @staticmethod
-    def save_to_parquet(data: pd.DataFrame, filename: Path) -> None:
+    def save_to_parquet(data: pl.DataFrame, filename: Path) -> None:
         """Safely saves a DataFrame to a Parquet file using a temporary file and atomic replace.
 
         Args:
-            data (pd.DataFrame): The DataFrame to save.
+            data (pl.DataFrame): The DataFrame to save.
             filename (Path): The path where the Parquet file will be saved.
         """
         try:
-            if not isinstance(data, pd.DataFrame):
-                raise TypeError("The 'data' parameter must be a pandas DataFrame.")
+            if not isinstance(data, pl.DataFrame):
+                raise TypeError("The 'data' parameter must be a polars DataFrame.")
 
             # Write to a temporary file in the same directory
             with tempfile.NamedTemporaryFile(suffix=".parquet", dir=filename.parent, delete=False) as tmp_file:
                 temp_filename = Path(tmp_file.name)
-                data.to_parquet(temp_filename, engine="pyarrow", index=False)
+                data.write_parquet(temp_filename)
 
             # Atomically replace the old file with the new one
             temp_filename.replace(filename)

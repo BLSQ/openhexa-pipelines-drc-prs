@@ -4,7 +4,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, workspace
 from openhexa.toolbox.dhis2 import DHIS2
@@ -86,8 +86,8 @@ def retrieve_ou_list(dhis2_client: DHIS2, ou_level: int) -> list:
     """
     try:
         # Retrieve organisational units and filter by ou_level
-        ous = pd.DataFrame(dhis2_client.meta.organisation_units())
-        ou_list = ous.loc[ous.level == ou_level].id.to_list()
+        ous = pl.DataFrame(dhis2_client.meta.organisation_units())
+        ou_list = ous.filter(pl.col("level") == ou_level)["id"].to_list()
 
         # Log the result based on the OU level
         if ou_level == 5:
@@ -103,12 +103,12 @@ def retrieve_ou_list(dhis2_client: DHIS2, ou_level: int) -> list:
         raise Exception(f"Error while retrieving OU id list for level {ou_level}: {e}") from e
 
 
-def select_descendants(df: pd.DataFrame, parent_ids: list[str]) -> pd.DataFrame:
+def select_descendants(df: pl.DataFrame, parent_ids: list[str]) -> pl.DataFrame:
     """Select all rows from a hierarchical DataFrame that are descendants of the given parent IDs.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pl.DataFrame
         A DataFrame containing at least two columns: "id" and "parent_id". Each row represents
         a node in a hierarchy, where "parent_id" references the parent node's "id".
     parent_ids : list[str]
@@ -116,7 +116,7 @@ def select_descendants(df: pd.DataFrame, parent_ids: list[str]) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         A filtered DataFrame containing the rows with IDs in the input `parent_ids` and all
         of their descendants.
 
@@ -133,28 +133,28 @@ def select_descendants(df: pd.DataFrame, parent_ids: list[str]) -> pd.DataFrame:
     # Iteratively find children
     while new_children:
         # Find rows where parent_id is in new_children
-        children = df[df["parent_id"].isin(new_children)]
+        children = df.filter(pl.col("parent_id").is_in(new_children))
         # Get their IDs
-        child_ids = set(children["id"])
+        child_ids = set(children["id"].to_list())
         # Only keep the new ones
         new_children = child_ids - all_ids
         # Add to all_ids
         all_ids.update(new_children)
 
     # Filter DataFrame to include only the parent and all descendants
-    return df[df["id"].isin(all_ids)]
+    return df.filter(pl.col("id").is_in(all_ids))
 
 
-def merge_dataframes(dataframes: list[pd.DataFrame]) -> pd.DataFrame | None:
+def merge_dataframes(dataframes: list[pl.DataFrame]) -> pl.DataFrame | None:
     """Merge a list of dataframes, excluding None values.
 
     Assume they shared the same columns.
 
     Args:
-        dataframes (list[pd.DataFrame]): A list of dataframes to merge.
+        dataframes (list[pl.DataFrame]): A list of dataframes to merge.
 
     Returns:
-        pd.DataFrame: Concatenated dataframe, or None if all inputs are None.
+        pl.DataFrame: Concatenated dataframe, or None if all inputs are None.
     """
     # Filter out None values from the list
     not_none_df = [df for df in dataframes if df is not None]
@@ -167,7 +167,7 @@ def merge_dataframes(dataframes: list[pd.DataFrame]) -> pd.DataFrame | None:
                 raise ValueError("DataFrames have mismatched columns and cannot be concatenated.")
 
     # Concatenate if there are valid dataframes, else return None
-    return pd.concat(not_none_df) if not_none_df else None
+    return pl.concat(not_none_df) if not_none_df else None
 
 
 def first_day_of_future_month(date: str, months_to_add: int) -> str:
@@ -187,21 +187,21 @@ def first_day_of_future_month(date: str, months_to_add: int) -> str:
     return target_date.strftime("%Y-%m-01")
 
 
-def save_to_parquet(data: pd.DataFrame, filename: Path) -> None:
+def save_to_parquet(data: pl.DataFrame, filename: Path) -> None:
     """Safely saves a DataFrame to a Parquet file using a temporary file and atomic replace.
 
     Args:
-        data (pd.DataFrame): The DataFrame to save.
+        data (pl.DataFrame): The DataFrame to save.
         filename (Path): The path where the Parquet file will be saved.
     """
     try:
-        if not isinstance(data, pd.DataFrame):
-            raise TypeError("The 'data' parameter must be a pandas DataFrame.")
+        if not isinstance(data, pl.DataFrame):
+            raise TypeError("The 'data' parameter must be a polars DataFrame.")
 
         # Write to a temporary file in the same directory
         with tempfile.NamedTemporaryFile(suffix=".parquet", dir=filename.parent, delete=False) as tmp_file:
             temp_filename = Path(tmp_file.name)
-            data.to_parquet(temp_filename, engine="pyarrow", index=False)
+            data.write_parquet(temp_filename)
 
         # Atomically replace the old file with the new one
         temp_filename.replace(filename)
@@ -213,8 +213,8 @@ def save_to_parquet(data: pd.DataFrame, filename: Path) -> None:
         raise RuntimeError(f"Failed to save parquet file to {filename}") from e
 
 
-def read_parquet_extract(parquet_file: Path) -> pd.DataFrame:
-    """Reads a Parquet file and returns its contents as a pandas DataFrame.
+def read_parquet_extract(parquet_file: Path) -> pl.DataFrame:
+    """Reads a Parquet file and returns its contents as a polars DataFrame.
 
     Parameters
     ----------
@@ -223,24 +223,22 @@ def read_parquet_extract(parquet_file: Path) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         The contents of the Parquet file as a DataFrame.
 
     Raises
     ------
     FileNotFoundError
         If the specified file does not exist.
-    pd.errors.EmptyDataError
-        If the Parquet file is empty.
     Exception
-        For any other unexpected errors during reading.
+        If the Parquet file is empty or for any other unexpected errors during reading.
     """
     try:
-        ou_source = pd.read_parquet(parquet_file)
+        ou_source = pl.read_parquet(parquet_file)
+        if ou_source.is_empty():
+            raise RuntimeError(f"Error while loading the extract: File is empty {parquet_file}.")
     except FileNotFoundError:
         raise FileNotFoundError(f"Error while loading the extract: File was not found {parquet_file}.") from None
-    except pd.errors.EmptyDataError:
-        raise pd.errors.EmptyDataError(f"Error while loading the extract: File is empty {parquet_file}.") from None
     except Exception as e:
         raise RuntimeError(f"Error while loading the extract: {parquet_file}. Error: {e}") from None
 

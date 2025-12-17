@@ -229,13 +229,16 @@ def compute_exhaustivity(
             raise ValueError(f"Missing required columns: {missing_columns}")
         
         # Convert VALUE to string and check for null/None/empty values
-        # VALUE might be stored as string, so we check for null, None, empty string, or "None"
+        # VALUE might be stored as string or numeric, so we first cast to string safely
+        # Check for null, None, empty string, or "None"
         df = df.with_columns([
             pl.when(pl.col("VALUE").is_null())
             .then(pl.lit(True))
-            .when(pl.col("VALUE").cast(pl.Utf8).str.strip_chars() == "")
+            .when(pl.col("VALUE").cast(pl.Utf8, strict=False).is_null())
             .then(pl.lit(True))
-            .when(pl.col("VALUE").cast(pl.Utf8).str.to_lowercase() == "none")
+            .when(pl.col("VALUE").cast(pl.Utf8, strict=False).str.strip_chars() == "")
+            .then(pl.lit(True))
+            .when(pl.col("VALUE").cast(pl.Utf8, strict=False).str.to_lowercase() == "none")
             .then(pl.lit(True))
             .otherwise(pl.lit(False))
             .alias("VALUE_IS_NULL")

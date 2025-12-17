@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
+# pandas removed - using polars only
 import polars as pl
 import requests
 from exhaustivity_calculation import compute_exhaustivity
@@ -490,7 +490,7 @@ def compute_exhaustivity_and_queue(
 
             try:
                 save_to_parquet(
-                    data=period_exhaustivity_simplified.to_pandas(),
+                    data=period_exhaustivity_simplified,
                     filename=output_dir / f"exhaustivity_{period}.parquet",
                 )
                 push_queue.enqueue(f"{extract_id}|{output_dir / f'exhaustivity_{period}.parquet'}")
@@ -509,7 +509,7 @@ def format_for_exhaustivity_import(
     pipeline_path: Path = None,
     extract_id: str = None,
     extract_config_item: dict = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Formats the exhaustivity DataFrame for DHIS2 import.
 
     Parameters
@@ -527,7 +527,7 @@ def format_for_exhaustivity_import(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         A DataFrame formatted for DHIS2 import with columns:
         DATA_TYPE, DX_UID, PERIOD, ORG_UNIT, VALUE, etc.
         Creates one entry per DX_UID expected for each COC.
@@ -611,7 +611,7 @@ def format_for_exhaustivity_import(
             "ATTRIBUTE_OPTION_COMBO": [],
             "RATE_TYPE": [],
             "DOMAIN_TYPE": [],
-        }).to_pandas()
+        })
     
     # Expand exhaustivity_df: for each (PERIOD, COC, ORG_UNIT, EXHAUSTIVITY_VALUE),
     # create entries for all expected DX_UIDs for that COC
@@ -638,7 +638,7 @@ def format_for_exhaustivity_import(
             "ATTRIBUTE_OPTION_COMBO": [],
             "RATE_TYPE": [],
             "DOMAIN_TYPE": [],
-        }).to_pandas()
+        })
     
     coc_dx_uids_df = pl.DataFrame(coc_dx_uids_list)
     
@@ -679,8 +679,8 @@ def format_for_exhaustivity_import(
         "DOMAIN_TYPE",
     ])
     
-    # Convert to pandas only at the end for DHIS2Pusher compatibility
-    return df_final.to_pandas()
+    # Return polars DataFrame (DHIS2Pusher now accepts polars)
+    return df_final
 
 
 @dhis2_exhaustivity.task
@@ -901,9 +901,8 @@ def push_data(
             # Read extract
             extract_id, extract_file_path = split_on_pipe(next_period)
             extract_path = Path(extract_file_path)
-            # Read with polars, convert to pandas only when needed
-            extract_data_pl = pl.read_parquet(extract_path)
-            extract_data = extract_data_pl.to_pandas()  # Convert to pandas for apply_analytics_data_element_extract_config
+            # Read with polars
+            extract_data = pl.read_parquet(extract_path)
             short_path = f"{extract_path.parent.name}/{extract_path.name}"
         except Exception as e:
             current_run.log_error(f"Failed to read extract from queue item: {next_period}. Error: {e}")
@@ -919,8 +918,7 @@ def push_data(
             
             if is_exhaustivity:
                 # Handle EXHAUSTIVITY data: expand from COC format to DX_UID format
-                # Convert back to polars for processing
-                exhaustivity_df_pl = pl.from_pandas(extract_data)
+                exhaustivity_df_pl = extract_data
                 
                 # Load extract config to get expected DX_UIDs
                 from utils import load_configuration
@@ -977,7 +975,7 @@ def push_data(
                     push_queue.dequeue()  # remove unknown item
                     continue
                 
-                data_type = extract_data["DATA_TYPE"].unique()[0]
+                data_type = extract_data["DATA_TYPE"].unique().to_list()[0]
                 
                 if data_type not in dispatch_map:
                     current_run.log_warning(f"Unknown DATA_TYPE '{data_type}' in extract: {short_path}. Skipping.")
@@ -1024,21 +1022,21 @@ def split_on_pipe(s: str) -> tuple[str, str | None]:
     return None, parts[0]
 
 
-def apply_analytics_data_element_extract_config(df: pd.DataFrame, extract_config: dict) -> pd.DataFrame:
+def apply_analytics_data_element_extract_config(df: pl.DataFrame, extract_config: dict) -> pl.DataFrame:
     """Applies data element mappings to the extracted data.
 
     It also filters data elements based on category option combo (COC) if specified in the extract configuration.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pl.DataFrame
         DataFrame containing the extracted data.
     extract_config : dict
         This is a dictionary containing the extract mappings.
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with mapped data elements.
     """
     if len(extract_config) == 0:
@@ -1050,8 +1048,8 @@ def apply_analytics_data_element_extract_config(df: pd.DataFrame, extract_config
         current_run.log_warning("No extract mappings provided, skipping data element mappings.")
         return df
 
-    # Convert to polars for processing
-    df_pl = pl.from_pandas(df)
+    # Use polars directly
+    df_pl = df
 
     # Loop over the configured data element mappings to filter by COC/AOC if provided
     current_run.log_info(f"Applying data element mappings for extract: {extract_config.get('EXTRACT_UID')}.")
@@ -1093,8 +1091,8 @@ def apply_analytics_data_element_extract_config(df: pd.DataFrame, extract_config
     if len(chunks) == 0:
         current_run.log_warning("No data elements matched the provided mappings, returning empty dataframe.")
         logging.warning("No data elements matched the provided mappings, returning empty dataframe.")
-        # Return empty pandas DataFrame with same columns
-        return pd.DataFrame(columns=df.columns)
+        # Return empty polars DataFrame with same schema
+        return pl.DataFrame(schema=df.schema)
 
     # Concatenate using polars
     df_filtered_pl = pl.concat(chunks)
@@ -1107,13 +1105,12 @@ def apply_analytics_data_element_extract_config(df: pd.DataFrame, extract_config
             pl.col("DX_UID").replace(uid_mappings_clean)
         )
 
-    # Convert back to pandas for compatibility
-    df_filtered = df_filtered_pl.to_pandas()
+    # Fill missing AOC (PRS default) using polars
+    df_filtered_pl = df_filtered_pl.with_columns(
+        pl.col("ATTRIBUTE_OPTION_COMBO").fill_null("HllvX50cXC0")
+    )
 
-    # Fill missing AOC (PRS default)
-    df_filtered["ATTRIBUTE_OPTION_COMBO"] = df_filtered.loc[:, "ATTRIBUTE_OPTION_COMBO"].replace({None: "HllvX50cXC0"})
-
-    return df_filtered
+    return df_filtered_pl
 
 
 def apply_reporting_rates_extract_config():

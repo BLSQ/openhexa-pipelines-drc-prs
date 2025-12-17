@@ -1,16 +1,13 @@
-import pandas as pd
-
-
 class DataPoint:
     """Helper class definition to store/create the correct DataElement JSON format."""
 
-    def __init__(self, series_row: pd.Series):
+    def __init__(self, row: dict):
         """Create a new org unit instance.
 
         Parameters
         ----------
-        series_row : pandas series
-            Expects columns with names :
+        row : dict
+            Dictionary with keys:
                 ['DATA_TYPE',
                 'DX_UID',
                 'PERIOD',
@@ -21,7 +18,6 @@ class DataPoint:
                 'DOMAIN_TYPE',
                 'VALUE']
         """
-        row = series_row.squeeze()
         self.dataType = row.get("DATA_TYPE")
         self.dataElement = row.get("DX_UID")
         self.period = row.get("PERIOD")

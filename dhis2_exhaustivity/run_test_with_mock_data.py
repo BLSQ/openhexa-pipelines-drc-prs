@@ -32,7 +32,6 @@ openhexa.sdk.workspace = MockWorkspace()
 
 # Importer les modules après le patch
 import polars as pl
-import pandas as pd
 from pipeline import compute_exhaustivity_data
 from utils import save_to_parquet
 
@@ -95,7 +94,7 @@ def create_mock_extract_data(pipeline_path: Path, extract_id: str, period: str):
         "DOMAIN_TYPE": ["AGGREGATED"] * len(rows),
     }
     
-    df = pd.DataFrame(data)
+    df = pl.DataFrame(data)
     filename = extracts_dir / f"data_{period}.parquet"
     save_to_parquet(df, filename)
     print(f"✅ Données mockées créées: {filename}")
@@ -114,13 +113,13 @@ def main():
     pipeline_path.mkdir(parents=True, exist_ok=True)
     
     # Copier les configs si nécessaire
-    config_files_dir = Path(__file__).parent / "config_files"
-    workspace_config_dir = pipeline_path / "config_files"
+    config_dir = Path(__file__).parent / "configuration"
+    workspace_config_dir = pipeline_path / "configuration"
     workspace_config_dir.mkdir(parents=True, exist_ok=True)
     
     # Copier les configs nécessaires
     for cfg_file in ["extract_config_test.json", "push_config_test.json"]:
-        src = config_files_dir / cfg_file
+        src = config_dir / cfg_file
         if src.exists():
             if cfg_file == "extract_config_test.json":
                 dest = workspace_config_dir / "extract_config.json"
@@ -129,7 +128,7 @@ def main():
             else:
                 dest = workspace_config_dir / cfg_file
             shutil.copy2(src, dest)
-            print(f"✅ {cfg_file} copié")
+            print(f"✅ {cfg_file} copié vers configuration/")
     
     # Créer des données mockées
     print("\n" + "=" * 80)
@@ -179,7 +178,7 @@ def main():
                         
                         if "EXHAUSTIVITY_VALUE" in df.columns:
                             exhaustivity_stats = df.group_by("EXHAUSTIVITY_VALUE").agg(
-                                pl.count().alias("count")
+                                pl.len().alias("count")
                             )
                             print(f"   Exhaustivity:")
                             for row in exhaustivity_stats.iter_rows(named=True):
