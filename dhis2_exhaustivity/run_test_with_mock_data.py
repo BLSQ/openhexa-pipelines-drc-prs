@@ -207,7 +207,8 @@ def main():
     print("📝 CRÉATION DE DONNÉES MOCKÉES")
     print("=" * 80 + "\n")
     
-    extract_id = "Fosa_exhaustivity_data_elements_test"
+    # Utiliser le vrai extract_id (sans _test) pour que compute_exhaustivity_data le trouve
+    extract_id = "Fosa_exhaustivity_data_elements"
     
     # Créer des données pour plusieurs périodes (6 mois comme en production)
     from datetime import datetime
