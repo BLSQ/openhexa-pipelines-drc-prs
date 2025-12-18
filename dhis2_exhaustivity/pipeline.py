@@ -531,7 +531,10 @@ def compute_exhaustivity_and_queue(
         current_run.log_info(f"Exhaustivity computation completed: {len(exhaustivity_df)} total combinations across all periods")
         
         # Get all periods from the result (may include periods not in exhaustivity_periods if data exists)
-        periods_in_result = sorted(exhaustivity_df["PERIOD"].unique().to_list()) if len(exhaustivity_df) > 0 else []
+        if len(exhaustivity_df) > 0 and "PERIOD" in exhaustivity_df.columns:
+            periods_in_result = sorted(exhaustivity_df["PERIOD"].unique().to_list())
+        else:
+            periods_in_result = []
         current_run.log_info(f"Periods in exhaustivity result: {periods_in_result}")
         current_run.log_info(f"Periods requested: {exhaustivity_periods}")
         
@@ -554,9 +557,11 @@ def compute_exhaustivity_and_queue(
                 )
                 continue
 
-            # Save exhaustivity data in simplified format: only COC, PERIOD, ORG_UNIT, EXHAUSTIVITY_VALUE
+            # Save exhaustivity data with DX_UID (matching CMM format)
+            # Keep all columns: PERIOD, DX_UID, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
             period_exhaustivity_simplified = period_exhaustivity.select([
                 "PERIOD",
+                "DX_UID",
                 "CATEGORY_OPTION_COMBO",
                 "ORG_UNIT",
                 "EXHAUSTIVITY_VALUE"
@@ -608,6 +613,8 @@ def format_for_exhaustivity_import(
     """
     # Determine expected DX_UIDs for each COC
     # Priority: 1) push_config, 2) original_data, 3) exhaustivity_df COCs (fallback)
+    # Note: expected_dx_uids_by_coc is indexed by SOURCE COC (from exhaustivity files)
+    # The COC mapping (source → target) will be done later in apply_analytics_data_element_extract_config
     expected_dx_uids_by_coc: dict[str, list[str]] = {}
     
             # 1) Try to load from push_config (source of truth)
@@ -637,14 +644,17 @@ def format_for_exhaustivity_import(
                 # Use source UID (dx_uid) - the mapping to target UID will be done later in apply_analytics_data_element_extract_config
                 # This matches the working version logic
                 coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
-                for _src_coc, target_coc in coc_map.items():
+                # Build expected_dx_uids_by_coc indexed by SOURCE COC (from exhaustivity files)
+                # The COC mapping (source → target) will be done later in apply_analytics_data_element_extract_config
+                for src_coc, target_coc in coc_map.items():
                     if target_coc is None:
                         continue
-                    coc_id = str(target_coc).strip()
-                    if not coc_id:
+                    src_coc_str = str(src_coc).strip()
+                    if not src_coc_str:
                         continue
+                    # Index by SOURCE COC (from exhaustivity files), not target COC
                     # Use source UID (dx_uid) - mapping will be applied later
-                    expected_dx_uids_by_coc_sets.setdefault(coc_id, set()).add(str(dx_uid))
+                    expected_dx_uids_by_coc_sets.setdefault(src_coc_str, set()).add(str(dx_uid))
 
             expected_dx_uids_by_coc = {
                 coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
@@ -685,84 +695,73 @@ def format_for_exhaustivity_import(
             "DX_UID": [],
             "PERIOD": [],
             "ORG_UNIT": [],
-            "VALUE": [],
+            "CATEGORY_OPTION_COMBO": [],
             "ATTRIBUTE_OPTION_COMBO": [],
+            "VALUE": [],
             "RATE_TYPE": [],
             "DOMAIN_TYPE": [],
         })
     
-    # Expand exhaustivity_df: for each (PERIOD, COC, ORG_UNIT, EXHAUSTIVITY_VALUE),
-    # create entries for all expected DX_UIDs for that COC
+    # DX_UID is already in exhaustivity_df (like CMM format)
+    # Just format for DHIS2 import by adding required columns (like format_for_import in CMM pipeline)
     current_run.log_info(
-        f"Formatting exhaustivity data for import: {len(exhaustivity_df)} entries, "
-        f"{len(expected_dx_uids_by_coc)} COCs with mappings"
+        f"Formatting exhaustivity data for import: {len(exhaustivity_df)} entries "
+        f"(DX_UID already present, matching CMM format)"
     )
-    # Use simple loop approach (like the working version) - more reliable than join for this use case
-    expanded_rows = []
-    cocs_in_exhaustivity = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list()
-    for row in exhaustivity_df.iter_rows(named=True):
-        period = row["PERIOD"]
-        coc = row["CATEGORY_OPTION_COMBO"]
-        org_unit = row["ORG_UNIT"]
-        exhaustivity_value = row["EXHAUSTIVITY_VALUE"]
-        
-        # Get expected DX_UIDs for this COC
-        dx_uids = expected_dx_uids_by_coc.get(coc, [])
-        if dx_uids:
-            for dx_uid in dx_uids:
-                expanded_rows.append({
-                    "PERIOD": period,
-                    "DX_UID": str(dx_uid),  # Ensure string type
-                    "ORG_UNIT": org_unit,
-                    "EXHAUSTIVITY_VALUE": exhaustivity_value,
-                })
-        else:
-            # Only log warning once per COC to avoid spam
-            if coc not in getattr(format_for_exhaustivity_import, '_warned_cocs', set()):
-                if not hasattr(format_for_exhaustivity_import, '_warned_cocs'):
-                    format_for_exhaustivity_import._warned_cocs = set()
-                format_for_exhaustivity_import._warned_cocs.add(coc)
-                current_run.log_warning(
-                    f"format_for_exhaustivity_import: No expected DX_UIDs found for COC {coc} "
-                    f"in push_config mapping ({len(expected_dx_uids_by_coc)} COCs available)"
-                )
     
-    if not expanded_rows:
-        return pl.DataFrame({
-            "DATA_TYPE": [],
-            "DX_UID": [],
-            "PERIOD": [],
-            "ORG_UNIT": [],
-            "VALUE": [],
-            "ATTRIBUTE_OPTION_COMBO": [],
-            "RATE_TYPE": [],
-            "DOMAIN_TYPE": [],
-        })
+    # Check if DX_UID is present (should be if compute_exhaustivity was updated correctly)
+    if "DX_UID" not in exhaustivity_df.columns:
+        current_run.log_warning(
+            "DX_UID not found in exhaustivity_df. Falling back to COC expansion logic."
+        )
+        # Fallback: expand COC → DX_UID (old logic)
+        expanded_rows = []
+        for row in exhaustivity_df.iter_rows(named=True):
+            period = row["PERIOD"]
+            source_coc = row["CATEGORY_OPTION_COMBO"]
+            org_unit = row["ORG_UNIT"]
+            exhaustivity_value = row["EXHAUSTIVITY_VALUE"]
+            dx_uids = expected_dx_uids_by_coc.get(source_coc, [])
+            if dx_uids:
+                for dx_uid in dx_uids:
+                    expanded_rows.append({
+                        "PERIOD": period,
+                        "DX_UID": str(dx_uid),
+                        "ORG_UNIT": org_unit,
+                        "CATEGORY_OPTION_COMBO": source_coc,
+                        "EXHAUSTIVITY_VALUE": exhaustivity_value,
+                    })
+        if not expanded_rows:
+            return pl.DataFrame({
+                "DATA_TYPE": [], "DX_UID": [], "PERIOD": [], "ORG_UNIT": [],
+                "CATEGORY_OPTION_COMBO": [], "ATTRIBUTE_OPTION_COMBO": [],
+                "VALUE": [], "RATE_TYPE": [], "DOMAIN_TYPE": [],
+            })
+        exhaustivity_df = pl.DataFrame(expanded_rows)
     
-    # Create expanded DataFrame
-    expanded_df = pl.DataFrame(expanded_rows)
-    
-    # Format for DHIS2 import using polars
-    # Each row represents an exhaustivity value for a (PERIOD, DX_UID, ORG_UNIT) combination
-    df_final = expanded_df.with_columns([
+    # Format for DHIS2 import (like format_for_import in CMM pipeline)
+    df_final = exhaustivity_df.with_columns([
         pl.lit("DATA_ELEMENT").alias("DATA_TYPE"),
+        pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID"),  # Already present, ensure String type
+        pl.col("CATEGORY_OPTION_COMBO").cast(pl.Utf8).alias("CATEGORY_OPTION_COMBO"),  # Already present
         pl.col("EXHAUSTIVITY_VALUE").cast(pl.Int64).alias("VALUE"),
-        pl.lit(None).alias("ATTRIBUTE_OPTION_COMBO"),
-        pl.lit(None).alias("RATE_TYPE"),
+        pl.lit(None).cast(pl.Utf8).alias("ATTRIBUTE_OPTION_COMBO"),
+        pl.lit(None).cast(pl.Utf8).alias("RATE_TYPE"),
         pl.lit("AGGREGATED").alias("DOMAIN_TYPE"),
     ]).select([
         "DATA_TYPE",
         "DX_UID",
         "PERIOD",
         "ORG_UNIT",
-        "VALUE",
+        "CATEGORY_OPTION_COMBO",
         "ATTRIBUTE_OPTION_COMBO",
+        "VALUE",
         "RATE_TYPE",
         "DOMAIN_TYPE",
     ])
     
-    # Convert to pandas only at the end for DHIS2Pusher compatibility (like the working version)
-    return df_final.to_pandas()
+    # Return Polars DataFrame (DHIS2Pusher accepts Polars)
+    return df_final
 
 
 @dhis2_exhaustivity.task
@@ -988,9 +987,8 @@ def push_data(
             # Read file path from queue
             _, extract_file_path = split_on_pipe(next_period)
             extract_path = Path(extract_file_path)
-            # Read with polars, convert to pandas (like the working version)
-            extract_data_pl = pl.read_parquet(extract_path)
-            extract_data = extract_data_pl.to_pandas()  # Convert to pandas for apply_analytics_data_element_extract_config
+            # Read with polars (keep everything in Polars)
+            extract_data = pl.read_parquet(extract_path)
             short_path = f"{extract_path.parent.name}/{extract_path.name}"
             
             # Determine extract_id from file path (ignore extract_id from queue)
@@ -1033,8 +1031,8 @@ def push_data(
             
             if is_exhaustivity:
                 # Handle EXHAUSTIVITY data: expand from COC format to DX_UID format
-                # Convert back to polars for processing (like the working version)
-                exhaustivity_df_pl = pl.from_pandas(extract_data)
+                # extract_data is already Polars
+                exhaustivity_df_pl = extract_data
                 
                 # Load extract config to get expected DX_UIDs
                 # extract_config_full already loaded above, reuse it
@@ -1068,8 +1066,10 @@ def push_data(
                             pass
                 
                 # Expand from COC format to DX_UID format for DHIS2 import
+                # Format for DHIS2 import (DX_UID is already in exhaustivity file, like CMM format)
+                # Just add required columns, no need to expand COC → DX_UID
                 df_final = format_for_exhaustivity_import(
-                    exhaustivity_df_pl.select(["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"]),
+                    exhaustivity_df_pl,  # Already contains DX_UID, PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
                     original_data=original_data,
                     pipeline_path=pipeline_path,
                     extract_id=extract_id,
@@ -1077,8 +1077,8 @@ def push_data(
                 )
                 
                 # Check if format_for_exhaustivity_import returned empty DataFrame
-                # df_final is now pandas (from format_for_exhaustivity_import)
-                if len(df_final) == 0:
+                # df_final is now Polars (from format_for_exhaustivity_import)
+                if df_final.is_empty():
                     current_run.log_warning(f"format_for_exhaustivity_import returned empty DataFrame for {extract_id}, skipping push")
                     push_queue.dequeue()
                     continue
@@ -1099,11 +1099,7 @@ def push_data(
                     push_queue.dequeue()
                     continue
                 
-                # Ensure df_mapped is polars DataFrame (apply_analytics_data_element_extract_config returns pl.DataFrame)
-                if isinstance(df_mapped, pd.DataFrame):
-                    current_run.log_warning(f"Converting pandas DataFrame to polars for {extract_id}")
-                    df_mapped = pl.from_pandas(df_mapped)
-                
+                # df_mapped is already Polars (apply_analytics_data_element_extract_config returns pl.DataFrame)
                 pusher.push_data(df_data=df_mapped)
             
             else:
@@ -1114,6 +1110,7 @@ def push_data(
                     push_queue.dequeue()  # remove unknown item
                     continue
                 
+                # extract_data is Polars DataFrame, so unique() returns Polars Series
                 data_type = extract_data["DATA_TYPE"].unique().to_list()[0]
                 
                 if data_type not in dispatch_map:

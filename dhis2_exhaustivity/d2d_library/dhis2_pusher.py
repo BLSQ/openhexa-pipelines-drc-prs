@@ -165,9 +165,9 @@ class DHIS2Pusher:
                 if response:
                     self._update_import_counts(summary, response)
                     # Capture conflicts/errorReports if present (only if response is not None)
-                    errors = response.get("conflicts", []) + response.get("errorReports", [])
-                    if errors:
-                        summary["ERRORS"].extend(errors)
+                errors = response.get("conflicts", []) + response.get("errorReports", [])
+                if errors:
+                    summary["ERRORS"].extend(errors)
 
             except requests.exceptions.RequestException as e:
                 response = self._safe_json(r) if r else None

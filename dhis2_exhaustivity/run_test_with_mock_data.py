@@ -65,27 +65,44 @@ def create_mock_extract_data(pipeline_path: Path, extract_id: str, period: str):
     if not extract_config:
         print(f"⚠️  Extract {extract_id} non trouvé dans push_config, utilisation des valeurs par défaut")
     
+    # Charger extract_config pour obtenir les UIDs si les mappings sont vides
+    extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+    extract_config_item = next(
+        (e for e in extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+         if e.get("EXTRACT_UID") == extract_id),
+        None
+    )
+    
     # Extraire les COCs source réels des mappings
     # IMPORTANT: Utiliser les DX_UIDs SOURCE (clés du mapping) et les COCs SOURCE (clés du CATEGORY_OPTION_COMBO)
     real_cocs = []
     real_dx_uids = []
     if extract_config:
         mappings = extract_config.get("MAPPINGS", {})
-        # Prendre TOUS les DX_UIDs source pour avoir des données complètes
-        # Les clés du mapping sont les DX_UIDs SOURCE (ceux qui sont dans les données extraites)
-        for dx_uid_source, mapping in mappings.items():
-            real_dx_uids.append(dx_uid_source)  # Utiliser le DX_UID source (clé du mapping)
-            # Prendre TOUS les COCs SOURCE du mapping (clés du CATEGORY_OPTION_COMBO)
-            coc_mapping = mapping.get("CATEGORY_OPTION_COMBO", {})
-            if coc_mapping:
-                # Les clés sont les COCs SOURCE (ceux qui sont dans les données extraites)
-                real_cocs.extend(list(coc_mapping.keys()))  # Prendre tous les COCs source
+        if mappings:
+            # Prendre TOUS les DX_UIDs source pour avoir des données complètes
+            # Les clés du mapping sont les DX_UIDs SOURCE (ceux qui sont dans les données extraites)
+            for dx_uid_source, mapping in mappings.items():
+                real_dx_uids.append(dx_uid_source)  # Utiliser le DX_UID source (clé du mapping)
+                # Prendre TOUS les COCs SOURCE du mapping (clés du CATEGORY_OPTION_COMBO)
+                coc_mapping = mapping.get("CATEGORY_OPTION_COMBO", {})
+                if coc_mapping:
+                    # Les clés sont les COCs SOURCE (ceux qui sont dans les données extraites)
+                    real_cocs.extend(list(coc_mapping.keys()))  # Prendre tous les COCs source
     
-    # Si pas de mappings trouvés, utiliser des valeurs par défaut
-    if not real_cocs:
-        real_cocs = ["ddJmZUacsvQ", "WZwmzIuRvwV", "t5L9ODSuYOG"]  # COCs réels par défaut
+    # Si pas de mappings trouvés, utiliser extract_config.UIDS et dériver les COCs depuis les données
+    if not real_dx_uids and extract_config_item:
+        # Utiliser les UIDs depuis extract_config.UIDS
+        real_dx_uids = extract_config_item.get("UIDS", [])
+        print(f"   ⚠️  Pas de mappings dans push_config, utilisation de {len(real_dx_uids)} UIDs depuis extract_config.UIDS")
+    
+    # Si toujours pas de DX_UIDs, utiliser des valeurs par défaut
     if not real_dx_uids:
         real_dx_uids = ["eKHjiGzfBep", "FVJ2v5RgBgL", "PlYGakAhqbk", "ccpDQ5umc0a"]  # DX_UIDs réels par défaut
+    
+    # Si pas de COCs trouvés, utiliser des valeurs par défaut
+    if not real_cocs:
+        real_cocs = ["ddJmZUacsvQ", "WZwmzIuRvwV", "t5L9ODSuYOG"]  # COCs réels par défaut
     
     # Utiliser TOUS les COCs et DX_UIDs uniques pour un test complet
     unique_cocs = sorted(list(set(real_cocs)))  # Utiliser TOUS les COCs source
@@ -97,14 +114,8 @@ def create_mock_extract_data(pipeline_path: Path, extract_id: str, period: str):
     
     # Utiliser de vrais ORG_UNIT UIDs depuis extract_config ou sync_config
     # En production, ce sont des UIDs DHIS2 comme "rWrCdr321Qu", "XjeRGfqHMrl", etc.
+    # extract_config_item a déjà été chargé plus haut
     real_org_units = []
-    extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
-    # Trouver l'extract config correspondant
-    extract_config_item = next(
-        (e for e in extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
-         if e.get("EXTRACT_UID") == extract_id),
-        None
-    )
     if extract_config_item:
         # Essayer d'obtenir les ORG_UNITS depuis extract_config
         org_units_from_config = extract_config_item.get("ORG_UNITS", [])

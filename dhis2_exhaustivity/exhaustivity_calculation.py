@@ -87,9 +87,10 @@ def compute_exhaustivity(
     Returns
     -------
     pl.DataFrame
-        DataFrame with columns: PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
+        DataFrame with columns: PERIOD, DX_UID, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
         EXHAUSTIVITY_VALUE is 1 if all DX_UIDs have non-null VALUE for this COC, 0 otherwise.
-        Missing (PERIOD, COC, ORG_UNIT) combinations are included with value 0.
+        One row per (PERIOD, DX_UID, COC, ORG_UNIT) combination (matching CMM format).
+        Missing combinations are included with value 0.
     """
     # Use provided extracts_folder or determine it based on extract_id
     if extracts_folder is None:
@@ -141,9 +142,9 @@ def compute_exhaustivity(
                     f"but missing files for periods: {missing_extracts}. "
                     f"Computing exhaustivity with available {len(periods) - len(missing_extracts)} period(s). "
                     f"Missing periods will be filled with exhaustivity=0 in the complete grid."
-                )
-            
-            try:
+            )
+        
+        try:
                 available_files = [f for f in files_to_read.values() if f is not None]
                 safe_log_info(f"Reading {len(available_files)} parquet file(s) for exhaustivity computation")
                 
@@ -175,100 +176,30 @@ def compute_exhaustivity(
                 # Use how="vertical_relaxed" to allow automatic type coercion if schemas differ slightly
                 df = pl.concat(dfs, how="vertical_relaxed")
                 safe_log_info(f"Loaded {len(df)} rows from extracted data")
-            except Exception as e:
-                raise RuntimeError(f"Error reading parquet files for exhaustivity computation: {e!s}") from e
+        except Exception as e:
+            raise RuntimeError(f"Error reading parquet files for exhaustivity computation: {e!s}") from e
         
-        # Apply mappings and filters from extract_config_item if provided
-        # Also try to load mappings from push_config if extract_config doesn't have mappings
-        mappings = {}
+        # IMPORTANT: Do NOT apply mappings before exhaustivity calculation
+        # We need to calculate exhaustivity with COC SOURCE and DX_UID SOURCE values
+        # The mappings define which (COC SOURCE, DX_UID SOURCE) pairs are valid
+        # Mappings (COC SOURCE → COC TARGET, DX_UID SOURCE → DX_UID TARGET) will be applied AFTER exhaustivity calculation
+        
+        # Only apply filters (org units) if provided, but keep COCs and DX_UIDs as SOURCE
         if extract_config_item:
             # Filter by specific org units if provided
             org_units_filter = extract_config_item.get("ORG_UNITS")
             if org_units_filter:
                 df = df.filter(pl.col("ORG_UNIT").is_in(org_units_filter))
                 safe_log_info(f"Filtered by specific org units: {org_units_filter}")
-            
-            # Try to get mappings from extract_config first
-            mappings = extract_config_item.get("MAPPINGS", {})
-            
-            # If no mappings in extract_config, try to load from push_config
-            if not mappings and pipeline_path:
-                try:
-                    push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
-                    push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
-                    # Find the extract that matches extract_id
-                    matching_extract = next(
-                        (e for e in push_extracts if e.get("EXTRACT_UID") == extract_id),
-                        None
-                    )
-                    if matching_extract:
-                        push_mappings = matching_extract.get("MAPPINGS", {})
-                        if push_mappings:
-                            # Only include mappings for UIDs that are in this extract
-                            if extract_config_item and extract_config_item.get("UIDS"):
-                                extract_uids = set(extract_config_item.get("UIDS", []))
-                                for uid, mapping in push_mappings.items():
-                                    if uid in extract_uids:
-                                        mappings[uid] = mapping
-                            else:
-                                mappings.update(push_mappings)
-                            
-                            if mappings:
-                                safe_log_info(f"Loaded mappings from push_config for {extract_id}: {len(mappings)} mappings")
-                        else:
-                            safe_log_info(f"No mappings found in push_config for {extract_id}, skipping mapping filters")
-                    else:
-                        safe_log_warning(f"Extract {extract_id} not found in push_config")
-                except Exception as e:
-                    safe_log_warning(f"Could not load mappings from push_config: {e!s}")
         
-        # Apply mappings if available
-        if mappings:
-            safe_log_info(f"Applying mappings and filters for {extract_id}: {len(mappings)} mappings")
-            chunks = []
-            for uid, mapping in mappings.items():
-                uid_mapping = mapping.get("UID")
-                coc_mappings = mapping.get("CATEGORY_OPTION_COMBO", {})
-                
-                # Filter by DX_UID
-                df_uid = df.filter(pl.col("DX_UID") == uid)
-                
-                # Only process if we have data for this UID
-                if len(df_uid) == 0:
-                    safe_log_warning(f"No data found for DX_UID {uid} in mappings, skipping")
-                    continue
-                
-                # Filter by COC if specified
-                if coc_mappings:
-                    coc_mappings = {k: v for k, v in coc_mappings.items() if v is not None}
-                    coc_keys = list(coc_mappings.keys())
-                    df_uid = df_uid.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(coc_keys))
-                    # Replace COC values if mapping provided
-                    coc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in coc_mappings.items() if v is not None}
-                    if coc_mappings_clean:
-                        df_uid = df_uid.with_columns(
-                            pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
-                        )
-                
-                # Apply UID mapping if specified
-                if uid_mapping:
-                    df_uid = df_uid.with_columns(
-                        pl.lit(uid_mapping).alias("DX_UID")
-                    )
-                
-                chunks.append(df_uid)
-            
-            if chunks:
-                df = pl.concat(chunks)
-                safe_log_info(f"After applying mappings: {len(df)} rows remaining")
-            else:
-                safe_log_warning("No data matched the mappings, DataFrame will be empty")
-                df = pl.DataFrame()
+        # Note: Mappings are NOT applied here - they will be applied later in apply_analytics_data_element_extract_config
+        # This ensures that exhaustivity calculation uses COC SOURCE and DX_UID SOURCE values
+        # and only considers valid pairs defined in extract_config.MAPPINGS
         
         # Check if dataframe is empty
         if len(df) == 0:
             safe_log_warning("DataFrame is empty after filtering, returning empty exhaustivity result")
-            return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
+            return pl.DataFrame({"PERIOD": [], "DX_UID": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
         
         # Check required columns exist
         required_columns = ["PERIOD", "DX_UID", "ORG_UNIT", "VALUE", "CATEGORY_OPTION_COMBO"]
@@ -297,12 +228,13 @@ def compute_exhaustivity(
         df_raw = df.select(["PERIOD", "DX_UID", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "VALUE", "VALUE_IS_NULL"])
         logging.info(f"Processing {len(df_raw)} data rows for exhaustivity computation.")
         
-        # Determine expected DX_UIDs for each COC (all DX_UIDs that should appear with that COC)
-        # Prefer using push_config mappings (source of truth), and fall back to data if not available.
-        # Read ALL parquet files in the extracts folder to get complete DX_UID / COC list, not just the current periods
+        # Determine expected DX_UIDs for each COC from extracted data (source of truth)
+        # The pairs (COC SOURCE, DX_UID SOURCE) come from the extracted data BEFORE mapping
+        # Read ALL parquet files in the extracts folder to get complete DX_UID / COC list (BEFORE mapping)
         all_available_files = list(extracts_folder.glob("data_*.parquet"))
         if all_available_files:
             # Read all files and normalize schemas before concatenation
+            # These files contain RAW data with COC SOURCE and DX_UID SOURCE (before mapping)
             dfs_all = []
             for f in all_available_files:
                 df_file = pl.read_parquet(f)
@@ -311,79 +243,153 @@ def compute_exhaustivity(
                     if df_file[col].dtype == pl.Null:
                         df_file = df_file.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
                 dfs_all.append(df_file)
-            df_all_periods = pl.concat(dfs_all, how="vertical_relaxed")
-            # Apply same filters as df if extract_config_item is provided
+            df_all_periods_raw = pl.concat(dfs_all, how="vertical_relaxed")
+            # Apply org units filter if provided (but keep COCs and DX_UIDs as SOURCE)
             if extract_config_item:
                 org_units_filter = extract_config_item.get("ORG_UNITS")
                 if org_units_filter:
-                    df_all_periods = df_all_periods.filter(pl.col("ORG_UNIT").is_in(org_units_filter))
+                    df_all_periods_raw = df_all_periods_raw.filter(pl.col("ORG_UNIT").is_in(org_units_filter))
         else:
-            df_all_periods = df
+            # If no files, use df but note that df might have mappings applied
+            # In this case, we need to use the raw data from df before mappings
+            df_all_periods_raw = df
         
-        # 1) Try to build expected DX_UIDs per COC from push_config mappings
+        # Build expected DX_UIDs per COC from push_config.MAPPINGS (source of truth for pairs)
+        # The mappings in push_config define which DX_UIDs are associated with which COCs
         expected_dx_uids_by_coc: dict[str, list[str]] = {}
-        try:
-            push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
-            push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
-            push_mappings: dict[str, dict] = {}
-            for push_extract in push_extracts:
-                push_mappings.update(push_extract.get("MAPPINGS", {}))
-
-            # Limit to DX_UIDs that are relevant for this extract (from extract_config if available,
-            # otherwise use DX_UIDs that appear in the data across all periods)
+        
+        # 1) Try to get mappings from push_config first (source of truth for pairs)
+        # Note: push_config may use different EXTRACT_UID names (e.g., "level_fosa", "level_zs")
+        # instead of the extract_id (e.g., "Fosa_exhaustivity_data_elements", "BCZ_exhaustivity_data_elements")
+        extract_mappings = {}
+        if pipeline_path:
+            try:
+                push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+                push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+                
+                # Try to find matching extract by EXTRACT_UID
+                # First try exact match, then try alternative names
+                matching_extract = None
+                
+                # Try exact match first
+                matching_extract = next(
+                    (e for e in push_extracts if e.get("EXTRACT_UID") == extract_id),
+                    None
+                )
+                
+                # If found but has empty mappings, or not found, try alternative names based on extract_id
+                if not matching_extract or not matching_extract.get("MAPPINGS"):
+                    if "Fosa" in extract_id or "fosa" in extract_id.lower():
+                        alt_extract = next(
+                            (e for e in push_extracts if e.get("EXTRACT_UID") == "level_fosa"),
+                            None
+                        )
+                        if alt_extract and alt_extract.get("MAPPINGS"):
+                            matching_extract = alt_extract
+                    elif "BCZ" in extract_id or "zs" in extract_id.lower():
+                        alt_extract = next(
+                            (e for e in push_extracts if e.get("EXTRACT_UID") == "level_zs"),
+                            None
+                        )
+                        if alt_extract and alt_extract.get("MAPPINGS"):
+                            matching_extract = alt_extract
+                
+                if matching_extract:
+                    push_mappings = matching_extract.get("MAPPINGS", {})
+                    if push_mappings:
+                        # Only include mappings for UIDs that are in extract_config.UIDS (if available)
+                        # Exception: if we found mappings via alternative name (level_fosa, level_zs),
+                        # use all mappings without filtering, as the UIDs may not match exactly
+                        found_via_alternative = matching_extract.get("EXTRACT_UID") in ["level_fosa", "level_zs"]
+                        
+                        if extract_config_item and extract_config_item.get("UIDS") and not found_via_alternative:
+                            extract_uids = set(extract_config_item.get("UIDS", []))
+                            for uid, mapping in push_mappings.items():
+                                if uid in extract_uids:
+                                    extract_mappings[uid] = mapping
+                        else:
+                            # Use all mappings (either no UIDS filter, or found via alternative name)
+                            extract_mappings.update(push_mappings)
+                        if extract_mappings:
+                            via_info = f" (found via {matching_extract.get('EXTRACT_UID')})" if found_via_alternative else ""
+                            safe_log_info(f"Loaded {len(extract_mappings)} mappings from push_config for {extract_id}{via_info}")
+                else:
+                    safe_log_warning(f"Extract {extract_id} not found in push_config (tried exact match and alternatives: level_fosa, level_zs)")
+            except Exception as e:
+                safe_log_warning(f"Could not load mappings from push_config: {e!s}")
+        
+        # 2) If no mappings in push_config, try extract_config as fallback
+        if not extract_mappings and extract_config_item:
+            extract_mappings = extract_config_item.get("MAPPINGS", {})
+            if extract_mappings:
+                safe_log_info(f"Loaded {len(extract_mappings)} mappings from extract_config for {extract_id}")
+        
+        # 3) Build expected_dx_uids_by_coc from mappings (indexed by COC SOURCE, using DX_UID SOURCE)
+        # This defines which (COC SOURCE, DX_UID SOURCE) pairs are valid
+        # We only calculate exhaustivity for these valid pairs
+        if extract_mappings:
+            # Filter by extract_config.UIDS if available (defines which DX_UIDs SOURCE are relevant)
             if extract_config_item and extract_config_item.get("UIDS"):
-                relevant_dx_uids = set(extract_config_item.get("UIDS", []))
+                relevant_dx_uids_source = set(extract_config_item.get("UIDS", []))
                 logging.info(
-                    f"Filtering DX_UIDs using extract_config: {len(relevant_dx_uids)} UIDs from config"
+                    f"Filtering DX_UIDs using extract_config.UIDS: {len(relevant_dx_uids_source)} UIDs from config"
                 )
             else:
-                relevant_dx_uids = set(df_all_periods["DX_UID"].unique().to_list())
-                logging.info(
-                    f"Using DX_UIDs from data (no extract_config UIDS): {len(relevant_dx_uids)} UIDs found"
-                )
-
+                relevant_dx_uids_source = None
+            
+            # Build expected_dx_uids_by_coc from mappings (COC SOURCE → DX_UID SOURCE pairs)
+            # This defines valid pairs: for each COC SOURCE, which DX_UIDs SOURCE are associated
+            # We use SOURCE values because mappings are NOT applied before exhaustivity calculation
             expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
-            for dx_uid, mapping in push_mappings.items():
-                if dx_uid not in relevant_dx_uids:
+            for dx_uid_source, mapping in extract_mappings.items():
+                if relevant_dx_uids_source and dx_uid_source not in relevant_dx_uids_source:
                     continue
-                # Get target UID (mapped UID), fallback to source UID if no mapping
-                target_uid = mapping.get("UID", dx_uid)
                 coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
-                for _src_coc, target_coc in coc_map.items():
+                # Index by COC SOURCE (keys of coc_map), use DX_UID SOURCE
+                # This defines which (COC SOURCE, DX_UID SOURCE) pairs are valid
+                for src_coc, target_coc in coc_map.items():
                     if target_coc is None:
                         continue
-                    coc_id = str(target_coc).strip()
-                    if not coc_id:
+                    src_coc_str = str(src_coc).strip()
+                    if not src_coc_str:
                         continue
-                    # Use target UID (after mapping) instead of source UID
-                    expected_dx_uids_by_coc_sets.setdefault(coc_id, set()).add(target_uid)
-
+                    # Index by COC SOURCE, use DX_UID SOURCE (before mapping)
+                    # This ensures we only calculate exhaustivity for valid pairs
+                    expected_dx_uids_by_coc_sets.setdefault(src_coc_str, set()).add(str(dx_uid_source))
+            
             expected_dx_uids_by_coc = {
                 coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
             }
-
-            if expected_dx_uids_by_coc:
-                safe_log_info(
-                    f"Expected DX_UIDs per COC loaded from push_config (global): {len(expected_dx_uids_by_coc)} COCs"
-                )
-        except Exception as e:
-            safe_log_warning(f"Could not load expected DX_UIDs per COC from push_config: {e!s}")
-            expected_dx_uids_by_coc = {}
-
-        # 2) Fallback: if push_config did not provide anything, derive expected DX_UIDs per COC from data
-        if not expected_dx_uids_by_coc:
-            # Optimized: use group_by instead of filtering for each COC
-            coc_dx_uids_df = (
-                df_all_periods.group_by("CATEGORY_OPTION_COMBO")
-                .agg(pl.col("DX_UID").unique().sort().alias("DX_UIDs"))
-            )
-            expected_dx_uids_by_coc = {
-                row["CATEGORY_OPTION_COMBO"]: row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]]
-                for row in coc_dx_uids_df.iter_rows(named=True)
-            }
             logging.info(
-                f"Expected DX_UIDs per COC derived from data (no push_config mapping): {len(expected_dx_uids_by_coc)} COCs"
+                f"Expected DX_UIDs per COC loaded from mappings (indexed by COC SOURCE): {len(expected_dx_uids_by_coc)} COCs"
             )
+        
+        # 4) Fallback: if no mappings available, derive from extracted data (using SOURCE values)
+        if not expected_dx_uids_by_coc:
+            logging.info("No mappings found in extract_config or push_config, deriving pairs from extracted data (SOURCE values)")
+            # Use df_all_periods_raw which has COC SOURCE and DX_UID SOURCE (before mapping)
+            # Filter by extract_config.UIDS if available
+            if extract_config_item and extract_config_item.get("UIDS"):
+                relevant_dx_uids = set(extract_config_item.get("UIDS", []))
+                df_all_periods_filtered = df_all_periods_raw.filter(pl.col("DX_UID").is_in(list(relevant_dx_uids)))
+            else:
+                df_all_periods_filtered = df_all_periods_raw
+            
+            if len(df_all_periods_filtered) > 0:
+                coc_dx_uids_df = (
+                    df_all_periods_filtered.group_by("CATEGORY_OPTION_COMBO")
+                    .agg(pl.col("DX_UID").unique().sort().alias("DX_UIDs"))
+                )
+                expected_dx_uids_by_coc = {
+                    row["CATEGORY_OPTION_COMBO"]: row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]]
+                    for row in coc_dx_uids_df.iter_rows(named=True)
+                }
+                logging.info(
+                    f"Expected DX_UIDs per COC derived from extracted data (SOURCE values, fallback): {len(expected_dx_uids_by_coc)} COCs"
+                )
+            else:
+                logging.warning("No data available to derive COC/DX_UID pairs. Using empty mapping.")
+                expected_dx_uids_by_coc = {}
         
         # Group by PERIOD, CATEGORY_OPTION_COMBO, and ORG_UNIT, check if all expected DX_UIDs are present and non-null
         # If any expected DX_UID is missing or null for a (PERIOD, COC, ORG_UNIT) combination, exhaustivity = 0
@@ -421,20 +427,38 @@ def compute_exhaustivity(
             # Exhaustivity = 0 if any expected DX_UID is missing OR any value is null
             exhaustivity_value = 0 if (missing_dx_uids or has_null_value) else 1
             
-            exhaustivity_rows.append({
-                "PERIOD": period,
-                "CATEGORY_OPTION_COMBO": coc,
-                "ORG_UNIT": org_unit,
-                "EXHAUSTIVITY_VALUE": exhaustivity_value,
-            })
+            # Create one row per expected DX_UID for this COC (like CMM format)
+            # This ensures DX_UID is in the exhaustivity file, matching CMM format
+            for dx_uid in expected_dx_uids:
+                exhaustivity_rows.append({
+                    "PERIOD": period,
+                    "DX_UID": dx_uid,
+                    "CATEGORY_OPTION_COMBO": coc,
+                    "ORG_UNIT": org_unit,
+                    "EXHAUSTIVITY_VALUE": exhaustivity_value,
+                })
         
         # Create the final exhaustivity dataframe
-        exhaustivity_df = pl.DataFrame(exhaustivity_rows)
+        if exhaustivity_rows:
+            exhaustivity_df = pl.DataFrame(exhaustivity_rows)
+        else:
+            # Empty DataFrame with correct schema
+            exhaustivity_df = pl.DataFrame({
+                "PERIOD": [],
+                "DX_UID": [],
+                "CATEGORY_OPTION_COMBO": [],
+                "ORG_UNIT": [],
+                "EXHAUSTIVITY_VALUE": [],
+            })
         
         # Log summary only (use logging instead of current_run to reduce API calls)
         total_combinations = len(exhaustivity_df)
-        complete_count = exhaustivity_df["EXHAUSTIVITY_VALUE"].sum()
-        incomplete_count = total_combinations - complete_count
+        if total_combinations > 0:
+            complete_count = exhaustivity_df["EXHAUSTIVITY_VALUE"].sum()
+            incomplete_count = total_combinations - complete_count
+        else:
+            complete_count = 0
+            incomplete_count = 0
         logging.info(
             f"Exhaustivity computation completed: {total_combinations} combinations "
             f"({complete_count} complete, {incomplete_count} incomplete)"
@@ -492,31 +516,61 @@ def compute_exhaustivity(
                 )
         
         # If we have expected periods and ORG_UNITs, create complete grid
-        if expected_periods and expected_org_units_list:
-            logging.info(
-                f"Creating complete grid: {len(expected_periods)} periods × {len(all_expected_cocs)} COCs × "
-                f"{len(expected_org_units_list)} ORG_UNITs = {len(expected_periods) * len(all_expected_cocs) * len(expected_org_units_list)} combinations"
-            )
+        # Now we need to include DX_UID in the grid (one per COC)
+        expected_df = None
+        if expected_periods and expected_org_units_list and all_expected_cocs:
+            # Build expected combinations: for each COC, get all its DX_UIDs
+            grid_rows = []
+            for coc in all_expected_cocs:
+                dx_uids_for_coc = expected_dx_uids_by_coc.get(coc, [])
+                if not dx_uids_for_coc:
+                    # If no DX_UIDs for this COC, skip it or use empty list
+                    continue
+                for period in expected_periods:
+                    for org_unit in expected_org_units_list:
+                        for dx_uid in dx_uids_for_coc:
+                            grid_rows.append({
+                                "PERIOD": period,
+                                "DX_UID": dx_uid,
+                                "CATEGORY_OPTION_COMBO": coc,
+                                "ORG_UNIT": org_unit,
+                            })
             
-            # Create a complete grid of all expected combinations (optimized with Polars)
-            # Use cross join for better performance than nested loops
-            periods_df = pl.DataFrame({"PERIOD": expected_periods})
-            cocs_df = pl.DataFrame({"CATEGORY_OPTION_COMBO": all_expected_cocs})
-            org_units_df = pl.DataFrame({"ORG_UNIT": expected_org_units_list})
-            
-            # Create cartesian product using cross joins
-            expected_df = periods_df.join(cocs_df, how="cross").join(org_units_df, how="cross")
+            if grid_rows:
+                expected_df = pl.DataFrame(grid_rows)
+                total_expected = len(expected_df)
+                logging.info(
+                    f"Creating complete grid: {len(expected_periods)} periods × {len(all_expected_cocs)} COCs × "
+                    f"{len(expected_org_units_list)} ORG_UNITs × avg {sum(len(expected_dx_uids_by_coc.get(coc, [])) for coc in all_expected_cocs) / max(len(all_expected_cocs), 1):.1f} DX_UIDs per COC = {total_expected} combinations"
+                )
+            else:
+                # If no grid rows (e.g., expected_dx_uids_by_coc is empty), skip grid creation
+                logging.warning("No grid rows to create (expected_dx_uids_by_coc is empty or no COCs). Skipping complete grid.")
+        else:
+            if not expected_periods:
+                logging.warning("No expected periods, cannot create complete grid.")
+            if not expected_org_units_list:
+                logging.warning("No expected ORG_UNITs, cannot create complete grid.")
+            if not all_expected_cocs:
+                logging.warning("No expected COCs, cannot create complete grid.")
             
             # Left join with computed exhaustivity
             # Missing combinations will have null EXHAUSTIVITY_VALUE
-            complete_exhaustivity = expected_df.join(
-                exhaustivity_df,
-                on=["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"],
-                how="left"
+        if expected_df is not None:
+            if len(exhaustivity_df) > 0:
+                complete_exhaustivity = expected_df.join(
+                    exhaustivity_df,
+                    on=["PERIOD", "DX_UID", "CATEGORY_OPTION_COMBO", "ORG_UNIT"],
+                    how="left"
             ).with_columns([
-                # Fill null values with 0 (form not submitted or missing)
+                    # Fill null values with 0 (form not submitted or missing)
                 pl.col("EXHAUSTIVITY_VALUE").fill_null(0)
             ])
+            else:
+                # If exhaustivity_df is empty, all combinations get exhaustivity=0
+                complete_exhaustivity = expected_df.with_columns([
+                    pl.lit(0).alias("EXHAUSTIVITY_VALUE")
+                ])
             
             missing_count = len(complete_exhaustivity) - len(exhaustivity_df)
             if missing_count > 0:
@@ -537,22 +591,30 @@ def compute_exhaustivity(
                     current_run.log_warning(f"Missing {len(missing_org_units)} ORG_UNITs")
             
             exhaustivity_df = complete_exhaustivity
-        elif expected_periods and not expected_org_units_list:
-            current_run.log_warning(
-                "Expected ORG_UNITs not provided, cannot create complete grid. "
-                "Only combinations with data will be included."
-            )
-        elif not expected_periods and expected_org_units_list:
-            current_run.log_warning(
-                "Expected periods not provided, cannot create complete grid. "
-                "Only combinations with data will be included."
-            )
+        else:
+            # If no grid was created, use exhaustivity_df as-is (may be empty)
+            # This happens when expected_dx_uids_by_coc is empty or no COCs/periods/org_units
+            logging.warning("No complete grid created, using exhaustivity_df as-is (may be empty)")
+            if expected_periods and not expected_org_units_list:
+                current_run.log_warning(
+                    "Expected ORG_UNITs not provided, cannot create complete grid. "
+                    "Only combinations with data will be included."
+                )
+            elif not expected_periods and expected_org_units_list:
+                current_run.log_warning(
+                    "Expected periods not provided, cannot create complete grid. "
+                    "Only combinations with data will be included."
+                )
         
-        logging.info(
-            f"Exhaustivity computed for {len(exhaustivity_df)} combinations (PERIOD, COC, ORG_UNIT). "
+        # Log summary only if exhaustivity_df is not empty
+        if len(exhaustivity_df) > 0:
+            logging.info(
+                f"Exhaustivity computed for {len(exhaustivity_df)} combinations (PERIOD, COC, ORG_UNIT). "
             f"Values: {exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()} complete, "
             f"{len(exhaustivity_df) - exhaustivity_df['EXHAUSTIVITY_VALUE'].sum()} incomplete."
         )
+        else:
+            logging.warning("Exhaustivity DataFrame is empty. No combinations computed.")
         
         # Generate summary.txt for monitoring (same format as version 5f649ac)
         # Determine output folder name based on extract_id (exact same logic as reference version)
@@ -605,9 +667,10 @@ def compute_exhaustivity(
                     logging.info(f"Using {len(dx_uids)} DX_UIDs from data")
                 
                 # Get all COCs that appear in the data (global across all available data)
+                # Use raw data (before mapping) to get COC SOURCE values
                 all_cocs = (
-                    sorted(df_all_periods["CATEGORY_OPTION_COMBO"].unique().to_list())
-                    if len(df_all_periods) > 0
+                    sorted(df_all_periods_raw["CATEGORY_OPTION_COMBO"].unique().to_list())
+                    if len(df_all_periods_raw) > 0
                     else []
                 )
 
@@ -624,7 +687,7 @@ def compute_exhaustivity(
                     if extract_config_item and extract_config_item.get("UIDS"):
                         relevant_dx_uids = set(extract_config_item.get("UIDS", []))
                     else:
-                        relevant_dx_uids = set(df_all_periods["DX_UID"].unique().to_list())
+                        relevant_dx_uids = set(df_all_periods_raw["DX_UID"].unique().to_list())
 
                     expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
                     for dx_uid, mapping in push_mappings.items():
@@ -655,7 +718,7 @@ def compute_exhaustivity(
                 if not expected_dx_uids_by_coc:
                     expected_dx_uids_by_coc = {}
                     for coc in all_cocs:
-                        coc_data = df_all_periods.filter(pl.col("CATEGORY_OPTION_COMBO") == coc)
+                        coc_data = df_all_periods_raw.filter(pl.col("CATEGORY_OPTION_COMBO") == coc)
                         expected_dx_uids_by_coc[coc] = sorted(coc_data["DX_UID"].unique().to_list())
                 
                 # Optimize: use Polars pivot instead of nested loops with filters
