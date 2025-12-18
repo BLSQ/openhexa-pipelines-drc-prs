@@ -305,7 +305,9 @@ def compute_exhaustivity(
                         if extract_config_item and extract_config_item.get("UIDS") and not found_via_alternative:
                             extract_uids = set(extract_config_item.get("UIDS", []))
                             for uid, mapping in push_mappings.items():
-                                if uid in extract_uids:
+                                # Include mapping if source UID OR target UID is in extract_config
+                                target_uid = mapping.get("UID", "")
+                                if uid in extract_uids or target_uid in extract_uids:
                                     extract_mappings[uid] = mapping
                         else:
                             # Use all mappings (either no UIDS filter, or found via alternative name)

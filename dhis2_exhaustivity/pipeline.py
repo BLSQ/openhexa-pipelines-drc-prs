@@ -193,7 +193,7 @@ def extract_data(
         data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
         extract_periods=get_periods(start_extraction, end),
         extract_config=extract_config,
-    )
+        )
 
 
 def handle_data_element_extracts(
@@ -424,16 +424,7 @@ def compute_exhaustivity_and_queue(
     
     try:
         # Get expected DX_UIDs and ORG_UNITs from extract configuration
-        # Load extract config to get expected data elements
-        from utils import load_configuration
-        extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
-        
-        # Find the extract configuration
-        extract_config_item = None
-        for extract_item in extract_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
-            if extract_item.get("EXTRACT_UID") == extract_id:
-                extract_config_item = extract_item
-                break
+        # (extract_config already loaded above)
         
         expected_dx_uids = None
         expected_org_units = None
@@ -506,6 +497,8 @@ def compute_exhaustivity_and_queue(
                                 f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
                                 f"(last resort fallback)"
                             )
+                        else:
+                            expected_org_units = None
                     except Exception as e3:
                         current_run.log_warning(f"Could not determine expected org units: {e3}")
                         expected_org_units = None
@@ -826,8 +819,8 @@ def update_dataset_org_units(
                 dhis2_client=dhis2_client,
                 source_dataset_id=mapping["source"],
                 target_dataset_id=mapping["target"],
-                dry_run=config["SETTINGS"].get("DRY_RUN", True),
-            )
+            dry_run=config["SETTINGS"].get("DRY_RUN", True),
+        )
             
             # Check if sync failed
             if sync_result and "error" in sync_result:
@@ -1113,18 +1106,18 @@ def push_data(
                 # extract_data is Polars DataFrame, so unique() returns Polars Series
                 data_type = extract_data["DATA_TYPE"].unique().to_list()[0]
                 
-                if data_type not in dispatch_map:
-                    current_run.log_warning(f"Unknown DATA_TYPE '{data_type}' in extract: {short_path}. Skipping.")
-                    push_queue.dequeue()  # remove unknown item
-                    continue
-                
-                # Get config and mapping function
-                cfg_list, mapper_func = dispatch_map[data_type]
-                extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
+            if data_type not in dispatch_map:
+                current_run.log_warning(f"Unknown DATA_TYPE '{data_type}' in extract: {short_path}. Skipping.")
+                push_queue.dequeue()  # remove unknown item
+                continue
 
-                # Apply mapping and push data
-                df_mapped = mapper_func(df=extract_data, extract_config=extract_config)
-                pusher.push_data(df_data=df_mapped)
+            # Get config and mapping function
+            cfg_list, mapper_func = dispatch_map[data_type]
+            extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
+
+            # Apply mapping and push data
+            df_mapped = mapper_func(df=extract_data, extract_config=extract_config)
+            pusher.push_data(df_data=df_mapped)
 
             # Success → dequeue
             push_queue.dequeue()
@@ -1235,11 +1228,11 @@ def apply_analytics_data_element_extract_config(df, extract_config: dict):
             # Only filter by COC if CATEGORY_OPTION_COMBO column exists
             if "CATEGORY_OPTION_COMBO" in df_uid.columns:
                 df_uid = df_uid.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(coc_keys))
-                # Replace values using polars replace
-                df_uid = df_uid.with_columns(
-                    pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
-                )
-
+            # Replace values using polars replace
+            df_uid = df_uid.with_columns(
+                pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
+            )
+        
         if aoc_mappings:
             aoc_mappings = {k: v for k, v in aoc_mappings.items() if v is not None}  # Do not replace with None
             aoc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in aoc_mappings.items()}
@@ -1247,10 +1240,10 @@ def apply_analytics_data_element_extract_config(df, extract_config: dict):
             # Only filter by AOC if ATTRIBUTE_OPTION_COMBO column exists
             if "ATTRIBUTE_OPTION_COMBO" in df_uid.columns:
                 df_uid = df_uid.filter(pl.col("ATTRIBUTE_OPTION_COMBO").is_in(aoc_keys))
-                # Replace values using polars replace
-                df_uid = df_uid.with_columns(
-                    pl.col("ATTRIBUTE_OPTION_COMBO").replace(aoc_mappings_clean)
-                )
+            # Replace values using polars replace
+            df_uid = df_uid.with_columns(
+                pl.col("ATTRIBUTE_OPTION_COMBO").replace(aoc_mappings_clean)
+            )
 
         if uid_mapping:
             uid_mappings[uid] = uid_mapping

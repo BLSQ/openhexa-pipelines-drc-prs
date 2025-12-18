@@ -142,8 +142,9 @@ def create_mock_extract_data(pipeline_path: Path, extract_id: str, period: str):
     
     # Créer des données complètes pour tester l'exhaustivity
     # Pour chaque COC, on doit avoir TOUS les DX_UIDs attendus pour que exhaustivity = 1
+    # Utiliser des valeurs réalistes (quantités) au lieu de valeurs séquentielles
+    import random
     rows = []
-    value_counter = 1
     
     # Pour chaque COC, créer des données pour chaque ORG_UNIT
     for coc_idx, coc in enumerate(unique_cocs):
@@ -153,18 +154,19 @@ def create_mock_extract_data(pipeline_path: Path, extract_id: str, period: str):
             if coc_idx < len(unique_cocs) // 2 and ou_idx < len(all_org_units) // 2:
                 # Complet: TOUS les DX_UIDs
                 for dx_uid in unique_dx_uids:
-                    rows.append((dx_uid, org_unit, coc, value_counter))
-                    value_counter += 1
+                    # Valeur réaliste: nombre aléatoire entre 1 et 1000 (quantités de médicaments, etc.)
+                    value = random.randint(1, 1000)
+                    rows.append((dx_uid, org_unit, coc, value))
             elif coc_idx < len(unique_cocs) // 3 or ou_idx < len(all_org_units) // 3:
                 # Presque complet: manque les 5 derniers DX_UIDs
                 for dx_uid in unique_dx_uids[:-5]:
-                    rows.append((dx_uid, org_unit, coc, value_counter))
-                    value_counter += 1
+                    value = random.randint(1, 1000)
+                    rows.append((dx_uid, org_unit, coc, value))
             else:
                 # Incomplet: manque les 10 derniers DX_UIDs
                 for dx_uid in unique_dx_uids[:-10]:
-                    rows.append((dx_uid, org_unit, coc, value_counter))
-                    value_counter += 1
+                    value = random.randint(1, 1000)
+                    rows.append((dx_uid, org_unit, coc, value))
     
     print(f"   - {len(rows)} lignes de données créées")
     print(f"   - {len(unique_cocs)} COCs × {len(real_org_units)} ORG_UNITs = {len(unique_cocs) * len(real_org_units)} combinaisons")
@@ -189,10 +191,9 @@ def create_mock_extract_data(pipeline_path: Path, extract_id: str, period: str):
 
 def main():
     print("=" * 80)
-    print("🧪 TEST DU CALCUL D'EXHAUSTIVITÉ AVEC DONNÉES MOCKÉES")
+    print("🧪 TEST DU CALCUL D'EXHAUSTIVITÉ AVEC VRAIES DONNÉES DHIS2")
     print("=" * 80)
-    print("\nCe script crée des données de test et calcule l'exhaustivité")
-    print("sans nécessiter de connexion DHIS2 réelle.\n")
+    print("\nCe script extrait les vraies données depuis DHIS2 et calcule l'exhaustivité.\n")
     
     # Définir le chemin du workspace
     workspace_path = Path(__file__).parent / "workspace"
@@ -204,7 +205,7 @@ def main():
     workspace_config_dir = pipeline_path / "configuration"
     workspace_config_dir.mkdir(parents=True, exist_ok=True)
     
-    # Copier les vraies configs (pas les configs de test) pour avoir accès aux mappings
+    # Copier les vraies configs
     for cfg_file in ["extract_config.json", "push_config.json"]:
         src = config_dir / cfg_file
         if src.exists():
@@ -212,37 +213,26 @@ def main():
             shutil.copy2(src, dest)
             print(f"✅ {cfg_file} copié vers configuration/")
     
-    # Créer des données mockées
+    # Extraire les vraies données depuis DHIS2
     print("\n" + "=" * 80)
-    print("📝 CRÉATION DE DONNÉES MOCKÉES")
+    print("📥 EXTRACTION DES VRAIES DONNÉES DEPUIS DHIS2")
     print("=" * 80 + "\n")
     
-    # Tester les deux extracts: Fosa et BCZ
-    extract_ids = ["Fosa_exhaustivity_data_elements", "BCZ_exhaustivity_data_elements"]
-    
-    # Créer des données pour plusieurs périodes (6 mois comme en production)
-    from datetime import datetime
-    from dateutil.relativedelta import relativedelta
-    
-    end = datetime.now().strftime("%Y%m")
-    end_date = datetime.strptime(end, "%Y%m")
-    start = (end_date - relativedelta(months=5)).strftime("%Y%m")  # 6 mois de données
-    
-    # Générer toutes les périodes
-    periods = []
-    current = datetime.strptime(start, "%Y%m")
-    end_dt = datetime.strptime(end, "%Y%m")
-    while current <= end_dt:
-        periods.append(current.strftime("%Y%m"))
-        current = current + relativedelta(months=1)
-    
-    print(f"📅 Périodes à créer: {len(periods)} ({start} à {end})")
-    
-    # Créer des données pour chaque extract et chaque période
-    for extract_id in extract_ids:
-        print(f"\n📊 Création de données pour: {extract_id}")
-        for period in periods:
-            create_mock_extract_data(pipeline_path, extract_id, period)
+    try:
+        # Importer et appeler la vraie fonction d'extraction
+        from pipeline import extract_data
+        
+        print("🔄 Démarrage de l'extraction des données...")
+        extract_data(
+            pipeline_path=pipeline_path,
+            run_task=True
+        )
+        print("✅ Extraction terminée avec succès")
+    except Exception as e:
+        print(f"❌ Erreur lors de l'extraction: {e}")
+        import traceback
+        traceback.print_exc()
+        return
     
     print("\n" + "=" * 80)
     print("📊 CALCUL D'EXHAUSTIVITÉ")
@@ -276,7 +266,8 @@ def main():
         db_path = pipeline_path / "configuration" / ".queue.db"
         push_queue = Queue(db_path)
         
-        # Calculer l'exhaustivité pour tous les extracts d'exhaustivité (Fosa et BCZ)
+        # Calculer l'exhaustivité pour tous les extracts d'exhaustivité
+        extract_ids = ["Fosa_exhaustivity_data_elements", "BCZ_exhaustivity_data_elements"]
         for target_extract in extract_config["DATA_ELEMENTS"].get("EXTRACTS", []):
             extract_id_to_compute = target_extract.get("EXTRACT_UID")
             # Ne traiter que les extracts d'exhaustivité
@@ -294,56 +285,57 @@ def main():
         # Restore original function
         pipeline.configure_logging = original_configure
         
-        # Afficher les résultats (utiliser le même nom de dossier que extracts)
-        if "Fosa" in extract_id:
-            folder_name = "Extract lvl 5"
-        elif "BCZ" in extract_id:
-            folder_name = "Extract lvl 3"
-        else:
-            folder_name = f"Extract {extract_id}"
-        
-        processed_dir = pipeline_path / "data" / "processed" / folder_name
-        if processed_dir.exists():
-            exhaustivity_files = list(processed_dir.glob("exhaustivity_*.parquet"))
-            print(f"\n📁 Fichiers d'exhaustivité créés: {len(exhaustivity_files)}")
+        # Afficher les résultats pour chaque extract
+        for extract_id_to_show in extract_ids:
+            # Afficher les résultats (utiliser le même nom de dossier que extracts)
+            if "Fosa" in extract_id_to_show:
+                folder_name = "Extract lvl 5"
+            elif "BCZ" in extract_id_to_show:
+                folder_name = "Extract lvl 3"
+            else:
+                folder_name = f"Extract {extract_id_to_show}"
             
-            if exhaustivity_files:
-                print("\n" + "=" * 80)
-                print("📊 RÉSULTATS DÉTAILLÉS")
-                print("=" * 80)
+            processed_dir = pipeline_path / "data" / "processed" / folder_name
+            if processed_dir.exists():
+                exhaustivity_files = list(processed_dir.glob("exhaustivity_*.parquet"))
+                print(f"\n📁 Fichiers d'exhaustivité créés pour {extract_id_to_show}: {len(exhaustivity_files)}")
                 
-                for f in exhaustivity_files:
-                    df = pl.read_parquet(f)
-                    print(f"\n📄 {f.name}:")
-                    print(f"   Total combinaisons: {len(df)}")
+                if exhaustivity_files:
+                    print(f"\n📊 RÉSULTATS POUR {extract_id_to_show}")
+                    print("=" * 80)
                     
-                    if len(df) > 0:
-                        periods = df["PERIOD"].unique().to_list()
-                        print(f"   Périodes: {periods}")
+                    for f in exhaustivity_files:
+                        df = pl.read_parquet(f)
+                        print(f"\n📄 {f.name}:")
+                        print(f"   Total combinaisons: {len(df)}")
                         
-                        if "EXHAUSTIVITY_VALUE" in df.columns:
-                            exhaustivity_stats = df.group_by("EXHAUSTIVITY_VALUE").agg(
-                                pl.len().alias("count")
-                            )
-                            print(f"   Exhaustivity:")
-                            for row in exhaustivity_stats.iter_rows(named=True):
-                                value = row["EXHAUSTIVITY_VALUE"]
-                                count = row["count"]
-                                pct = (count / len(df)) * 100
-                                status = "✅ COMPLET" if value == 1 else "❌ INCOMPLET"
-                                print(f"     {status}: {count} combinaisons ({pct:.1f}%)")
+                        if len(df) > 0:
+                            periods = df["PERIOD"].unique().to_list()
+                            print(f"   Périodes: {periods}")
                             
-                            # Afficher quelques exemples
-                            print(f"\n   📋 Exemples:")
-                            print(df.head(10))
-        else:
-            print(f"⚠️  Aucun fichier trouvé dans {processed_dir}")
+                            if "EXHAUSTIVITY_VALUE" in df.columns:
+                                exhaustivity_stats = df.group_by("EXHAUSTIVITY_VALUE").agg(
+                                    pl.len().alias("count")
+                                )
+                                print(f"   Exhaustivity:")
+                                for row in exhaustivity_stats.iter_rows(named=True):
+                                    value = row["EXHAUSTIVITY_VALUE"]
+                                    count = row["count"]
+                                    pct = (count / len(df)) * 100
+                                    status = "✅ COMPLET" if value == 1 else "❌ INCOMPLET"
+                                    print(f"     {status}: {count} combinaisons ({pct:.1f}%)")
+                                
+                                # Afficher quelques exemples
+                                print(f"\n   📋 Exemples:")
+                                print(df.head(10))
+                else:
+                    print(f"⚠️  Aucun fichier trouvé dans {processed_dir}")
         
         print("\n" + "=" * 80)
         print("✅ TEST TERMINÉ AVEC SUCCÈS")
         print("=" * 80)
         print(f"\n📝 Résultats disponibles dans:")
-        print(f"   - Processed: {processed_dir}")
+        print(f"   - Processed: {pipeline_path / 'data' / 'processed'}")
         print("=" * 80)
         
     except Exception as e:
