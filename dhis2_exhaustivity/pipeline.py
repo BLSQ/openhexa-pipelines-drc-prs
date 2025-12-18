@@ -1225,25 +1225,25 @@ def apply_analytics_data_element_extract_config(df, extract_config: dict):
             coc_mappings = {k: v for k, v in coc_mappings.items() if v is not None}  # Do not replace with None
             coc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in coc_mappings.items()}
             coc_keys = list(coc_mappings_clean.keys())
-            # Only filter by COC if CATEGORY_OPTION_COMBO column exists
+            # Only filter and replace by COC if CATEGORY_OPTION_COMBO column exists
             if "CATEGORY_OPTION_COMBO" in df_uid.columns:
                 df_uid = df_uid.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(coc_keys))
-            # Replace values using polars replace
-            df_uid = df_uid.with_columns(
-                pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
-            )
+                # Replace values using polars replace
+                df_uid = df_uid.with_columns(
+                    pl.col("CATEGORY_OPTION_COMBO").replace(coc_mappings_clean)
+                )
         
         if aoc_mappings:
             aoc_mappings = {k: v for k, v in aoc_mappings.items() if v is not None}  # Do not replace with None
             aoc_mappings_clean = {str(k).strip(): str(v).strip() for k, v in aoc_mappings.items()}
             aoc_keys = list(aoc_mappings_clean.keys())
-            # Only filter by AOC if ATTRIBUTE_OPTION_COMBO column exists
+            # Only filter and replace by AOC if ATTRIBUTE_OPTION_COMBO column exists
             if "ATTRIBUTE_OPTION_COMBO" in df_uid.columns:
                 df_uid = df_uid.filter(pl.col("ATTRIBUTE_OPTION_COMBO").is_in(aoc_keys))
-            # Replace values using polars replace
-            df_uid = df_uid.with_columns(
-                pl.col("ATTRIBUTE_OPTION_COMBO").replace(aoc_mappings_clean)
-            )
+                # Replace values using polars replace
+                df_uid = df_uid.with_columns(
+                    pl.col("ATTRIBUTE_OPTION_COMBO").replace(aoc_mappings_clean)
+                )
 
         if uid_mapping:
             uid_mappings[uid] = uid_mapping
