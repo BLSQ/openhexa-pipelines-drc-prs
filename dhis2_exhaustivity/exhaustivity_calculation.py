@@ -150,26 +150,31 @@ def compute_exhaustivity(
                 
                 # Read all files and normalize schemas before concatenation
                 # This handles cases where some files have Null columns and others have String columns
+                # IMPORTANT: Select columns in a fixed order to avoid schema mismatch errors
+                required_cols_order = [
+                    "PERIOD",
+                    "DX_UID",
+                    "CATEGORY_OPTION_COMBO",
+                    "ORG_UNIT",
+                    "VALUE",
+                ]
+                
                 dfs = []
                 for f in available_files:
                     df_file = pl.read_parquet(f)
+                    
                     # Ensure all required columns exist with correct types
                     # If a column is missing or Null type, cast it to String
-                    required_cols = {
-                        "PERIOD": pl.Utf8,
-                        "DX_UID": pl.Utf8,
-                        "CATEGORY_OPTION_COMBO": pl.Utf8,
-                        "ORG_UNIT": pl.Utf8,
-                        "VALUE": pl.Utf8,
-                    }
-                    
-                    # Add missing columns as Null/String
-                    for col, dtype in required_cols.items():
+                    for col in required_cols_order:
                         if col not in df_file.columns:
-                            df_file = df_file.with_columns(pl.lit(None, dtype=dtype).alias(col))
+                            df_file = df_file.with_columns(pl.lit(None, dtype=pl.Utf8).alias(col))
                         elif df_file[col].dtype == pl.Null:
                             # Convert Null type to String type
                             df_file = df_file.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
+                    
+                    # Select only required columns in fixed order to ensure consistent schema
+                    # This prevents "schema names differ" errors when concatenating
+                    df_file = df_file.select(required_cols_order)
                     
                     dfs.append(df_file)
                 
@@ -235,13 +240,27 @@ def compute_exhaustivity(
         if all_available_files:
             # Read all files and normalize schemas before concatenation
             # These files contain RAW data with COC SOURCE and DX_UID SOURCE (before mapping)
+            # IMPORTANT: Select columns in a fixed order to avoid schema mismatch errors
+            required_cols_order_all = [
+                "PERIOD",
+                "DX_UID",
+                "CATEGORY_OPTION_COMBO",
+                "ORG_UNIT",
+                "VALUE",
+            ]
+            
             dfs_all = []
             for f in all_available_files:
                 df_file = pl.read_parquet(f)
                 # Normalize schema: ensure Null columns are cast to String
-                for col in df_file.columns:
-                    if df_file[col].dtype == pl.Null:
+                for col in required_cols_order_all:
+                    if col not in df_file.columns:
+                        df_file = df_file.with_columns(pl.lit(None, dtype=pl.Utf8).alias(col))
+                    elif df_file[col].dtype == pl.Null:
                         df_file = df_file.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
+                
+                # Select only required columns in fixed order to ensure consistent schema
+                df_file = df_file.select(required_cols_order_all)
                 dfs_all.append(df_file)
             df_all_periods_raw = pl.concat(dfs_all, how="vertical_relaxed")
             # Apply org units filter if provided (but keep COCs and DX_UIDs as SOURCE)

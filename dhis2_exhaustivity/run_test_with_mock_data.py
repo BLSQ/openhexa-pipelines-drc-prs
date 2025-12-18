@@ -248,11 +248,9 @@ def main():
         
         # Appeler directement compute_exhaustivity_and_queue au lieu de compute_exhaustivity_data
         # car compute_exhaustivity_data est un PipelineWithTask qui ne s'exécute pas directement
-        from pipeline import compute_exhaustivity_and_queue
-        from d2d_library.db_queue import Queue
+        from pipeline import compute_exhaustivity_and_queue, get_periods
         from datetime import datetime
         from dateutil.relativedelta import relativedelta
-        from pipeline import get_periods
         
         # Calculer les périodes
         extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
@@ -261,10 +259,6 @@ def main():
         end_date = datetime.strptime(end, "%Y%m")
         start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
         exhaustivity_periods = get_periods(start, end)
-        
-        # Initialiser la queue
-        db_path = pipeline_path / "configuration" / ".queue.db"
-        push_queue = Queue(db_path)
         
         # Calculer l'exhaustivité pour tous les extracts d'exhaustivité
         extract_ids = ["Fosa_exhaustivity_data_elements", "BCZ_exhaustivity_data_elements"]
@@ -277,7 +271,6 @@ def main():
                     pipeline_path=pipeline_path,
                     extract_id=extract_id_to_compute,
                     exhaustivity_periods=exhaustivity_periods,
-                    push_queue=push_queue,
                 )
         
         print("\n✅ Calcul d'exhaustivité terminé avec succès!")

@@ -63,7 +63,7 @@ class DataPoint:
         }
 
     def _check_attributes(self, exclude_value: bool = False) -> bool:
-        """Check if all attributes are not None.
+        """Check if mandatory attributes are not None.
 
         Parameters
         ----------
@@ -73,14 +73,14 @@ class DataPoint:
         Returns
         -------
         bool
-            True if all relevant attributes are not None, False otherwise.
+            True if all mandatory attributes are not None, False otherwise.
         """
-        # List of attributes to check, optionally excluding the 'value' attribute
-        attributes = [self.dataElement, self.period, self.orgUnit, self.categoryOptionCombo, self.attributeOptionCombo]
+        # List of MANDATORY attributes to check (attributeOptionCombo is optional)
+        attributes = [self.dataElement, self.period, self.orgUnit, self.categoryOptionCombo]
         if not exclude_value:
             attributes.append(self.value)
 
-        # Return True if all attributes are not None
+        # Return True if all mandatory attributes are not None
         return all(attr is not None for attr in attributes)
 
     def is_valid(self) -> bool:
