@@ -91,17 +91,19 @@ class AnanalyticsDataElementExtractor:
             return pl.DataFrame(schema=empty_schema)
 
         try:
-            data_format = pl.DataFrame({
-                "DX_UID": data["dx"],
-                "PERIOD": data["pe"],
-                "ORG_UNIT": data["ou"],
-                "CATEGORY_OPTION_COMBO": data["co"],
-                "DOMAIN_TYPE": pl.lit("AGGREGATED"),
-                "VALUE": data["value"],
-                "DATA_TYPE": pl.lit("DATA_ELEMENT"),
-                "ATTRIBUTE_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
-                "RATE_TYPE": pl.lit(None, dtype=pl.Utf8),
-            })
+            # Use select() and with_columns() instead of passing Expr to DataFrame constructor
+            data_format = data.select([
+                pl.col("dx").alias("DX_UID"),
+                pl.col("pe").alias("PERIOD"),
+                pl.col("ou").alias("ORG_UNIT"),
+                pl.col("co").alias("CATEGORY_OPTION_COMBO"),
+                pl.col("value").alias("VALUE"),
+            ]).with_columns([
+                pl.lit("AGGREGATED").alias("DOMAIN_TYPE"),
+                pl.lit("DATA_ELEMENT").alias("DATA_TYPE"),
+                pl.lit(None, dtype=pl.Utf8).alias("ATTRIBUTE_OPTION_COMBO"),
+                pl.lit(None, dtype=pl.Utf8).alias("RATE_TYPE"),
+            ])
             return data_format
 
         except Exception as e:
@@ -437,40 +439,47 @@ class DHIS2Extractor:
             raise ValueError("Incorrect 'data_type' configuration ('DATA_ELEMENT', 'REPORTING_RATE', 'INDICATOR').")
 
         try:
-            base_cols = {
-                "PERIOD": dhis_data["period"],
-                "ORG_UNIT": dhis_data["orgUnit"],
-                "DOMAIN_TYPE": pl.lit(domain_type),
-                "VALUE": dhis_data["value"],
-                "DATA_TYPE": pl.lit(data_type),
-            }
-            
+            # Use select() and with_columns() instead of passing Expr to DataFrame constructor
             if data_type == "DATA_ELEMENT":
-                data_format = pl.DataFrame({
-                    **base_cols,
-                    "DX_UID": dhis_data["dataElement"],
-                    "CATEGORY_OPTION_COMBO": dhis_data["categoryOptionCombo"],
-                    "ATTRIBUTE_OPTION_COMBO": dhis_data["attributeOptionCombo"],
-                    "RATE_TYPE": pl.lit(None, dtype=pl.Utf8),
-                })
+                data_format = dhis_data.select([
+                    pl.col("period").alias("PERIOD"),
+                    pl.col("orgUnit").alias("ORG_UNIT"),
+                    pl.col("value").alias("VALUE"),
+                    pl.col("dataElement").alias("DX_UID"),
+                    pl.col("categoryOptionCombo").alias("CATEGORY_OPTION_COMBO"),
+                    pl.col("attributeOptionCombo").alias("ATTRIBUTE_OPTION_COMBO"),
+                ]).with_columns([
+                    pl.lit(domain_type).alias("DOMAIN_TYPE"),
+                    pl.lit(data_type).alias("DATA_TYPE"),
+                    pl.lit(None, dtype=pl.Utf8).alias("RATE_TYPE"),
+                ])
             elif data_type == "REPORTING_RATE":
                 # Split dx column by "." to get DX_UID and RATE_TYPE
-                split_col = dhis_data["dx"].str.split(".", inclusive=False)
-                data_format = pl.DataFrame({
-                    **base_cols,
-                    "DX_UID": split_col.list.get(0),
-                    "RATE_TYPE": split_col.list.get(1),
-                    "CATEGORY_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
-                    "ATTRIBUTE_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
-                })
+                data_format = dhis_data.select([
+                    pl.col("period").alias("PERIOD"),
+                    pl.col("orgUnit").alias("ORG_UNIT"),
+                    pl.col("value").alias("VALUE"),
+                    pl.col("dx").str.split(".", inclusive=False).list.get(0).alias("DX_UID"),
+                    pl.col("dx").str.split(".", inclusive=False).list.get(1).alias("RATE_TYPE"),
+                ]).with_columns([
+                    pl.lit(domain_type).alias("DOMAIN_TYPE"),
+                    pl.lit(data_type).alias("DATA_TYPE"),
+                    pl.lit(None, dtype=pl.Utf8).alias("CATEGORY_OPTION_COMBO"),
+                    pl.lit(None, dtype=pl.Utf8).alias("ATTRIBUTE_OPTION_COMBO"),
+                ])
             elif data_type == "INDICATOR":
-                data_format = pl.DataFrame({
-                    **base_cols,
-                    "DX_UID": dhis_data["dx"],
-                    "CATEGORY_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
-                    "ATTRIBUTE_OPTION_COMBO": pl.lit(None, dtype=pl.Utf8),
-                    "RATE_TYPE": pl.lit(None, dtype=pl.Utf8),
-                })
+                data_format = dhis_data.select([
+                    pl.col("period").alias("PERIOD"),
+                    pl.col("orgUnit").alias("ORG_UNIT"),
+                    pl.col("value").alias("VALUE"),
+                    pl.col("dx").alias("DX_UID"),
+                ]).with_columns([
+                    pl.lit(domain_type).alias("DOMAIN_TYPE"),
+                    pl.lit(data_type).alias("DATA_TYPE"),
+                    pl.lit(None, dtype=pl.Utf8).alias("CATEGORY_OPTION_COMBO"),
+                    pl.lit(None, dtype=pl.Utf8).alias("ATTRIBUTE_OPTION_COMBO"),
+                    pl.lit(None, dtype=pl.Utf8).alias("RATE_TYPE"),
+                ])
             return data_format
 
         except Exception as e:
