@@ -1,7 +1,7 @@
 {
     "SETTINGS": {
         "SOURCE_DHIS2_CONNECTION": "drc-prs",
-        "EXTRACTION_MONTHS_WINDOW": 6,
+        "EXTRACTION_MONTHS_WINDOW": 3,
         "STARTDATE": "202506",
         "ENDDATE": "202512",
         "MODE": "DOWNLOAD_REPLACE"

@@ -549,18 +549,19 @@ def compute_exhaustivity_and_queue(
                 expected_org_units = None
     
     # Compute exhaustivity values for ALL periods at once
-    # This ensures we detect missing periods and create a complete grid
-    # Returns DataFrame with PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
+    # IMPORTANT: Ne pas utiliser expected_org_units pour créer une grille complète
+    # On veut seulement les combinaisons qui existent réellement dans les parquet
+    # Passer expected_org_units=None pour que compute_exhaustivity utilise seulement les org units des données
     current_run.log_info(
         f"Computing exhaustivity for {len(exhaustivity_periods)} periods: {exhaustivity_periods}. "
-        f"Missing periods will be filled with exhaustivity=0."
+        f"Using only org units present in extracted data (no complete grid with all dataset org units)."
     )
     exhaustivity_df = compute_exhaustivity(
         pipeline_path=pipeline_path,
         extract_id=extract_id,
         periods=exhaustivity_periods,  # Pass all periods
         expected_dx_uids=expected_dx_uids,
-        expected_org_units=expected_org_units,
+        expected_org_units=None,  # IMPORTANT: None = utiliser seulement les org units présentes dans les données
         extract_config_item=extract_config_item,
         extracts_folder=extracts_folder,
     )
@@ -1206,19 +1207,50 @@ def process_extract_files(
                     current_run.log_warning(f"⚠️  DataFrame is empty after filtering by TARGET_DATASET_UID {target_dataset_uid} for {extract_id}, skipping.")
                     return
             
+            # Filter out invalid data BEFORE pushing to avoid processing invalid rows
+            # Invalid = missing required fields (DX_UID, PERIOD, ORG_UNIT, CATEGORY_OPTION_COMBO, VALUE)
+            required_cols = ["DX_UID", "PERIOD", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "VALUE"]
+            rows_before_filter = len(df_combined)
+            
+            # Filter out rows with None/null in required columns
+            df_filtered = df_combined.filter(
+                pl.col("DX_UID").is_not_null() &
+                pl.col("PERIOD").is_not_null() &
+                pl.col("ORG_UNIT").is_not_null() &
+                pl.col("CATEGORY_OPTION_COMBO").is_not_null() &
+                pl.col("VALUE").is_not_null()
+            )
+            
+            rows_after_filter = len(df_filtered)
+            rows_filtered_out = rows_before_filter - rows_after_filter
+            
+            if rows_filtered_out > 0:
+                current_run.log_warning(
+                    f"⚠️  Filtered out {rows_filtered_out:,} invalid rows (missing required fields) "
+                    f"before push ({rows_before_filter:,} → {rows_after_filter:,})"
+                )
+            
             # Push all data at once (DHIS2Pusher will automatically split into chunks of max_post)
             # IMPORTANT: Each extract pushes to its own TARGET_DATASET_UID via the mappings
             current_run.log_info(
-                f"🚀 Pushing {len(df_combined)} rows for {extract_id} "
+                f"🚀 Pushing {rows_after_filter:,} valid rows for {extract_id} "
                 f"(from {len(all_dataframes)} file(s), periods: {periods_str}) "
                 f"→ TARGET_DATASET_UID: {target_dataset_uid}"
             )
-            pusher.push_data(df_data=df_combined)
-            
-            current_run.log_info(
-                f"✅ Push completed for {extract_id} "
-                f"({len(all_dataframes)} file(s), {len(df_combined)} rows total)"
-            )
+            try:
+                pusher.push_data(df_data=df_filtered)
+                current_run.log_info(
+                    f"✅ Push completed for {extract_id} "
+                    f"({len(all_dataframes)} file(s), {len(df_combined)} rows total)"
+                )
+            except Exception as push_error:
+                error_msg = f"❌ Error during push_data call for {extract_id}: {push_error!s}"
+                current_run.log_error(error_msg)
+                logging.error(error_msg)
+                import traceback
+                traceback_str = traceback.format_exc()
+                logging.error(f"Full traceback:\n{traceback_str}")
+                raise  # Re-raise to be caught by outer try/except
         except Exception as e:
             error_msg = f"❌ Error pushing data for {extract_id}: {e!s}"
             current_run.log_error(error_msg)

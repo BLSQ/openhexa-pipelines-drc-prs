@@ -513,39 +513,52 @@ def compute_exhaustivity(
         # Use expected periods (from periods parameter) and expected ORG_UNITs
         expected_periods = periods if periods else periods_in_data
         
-        # If expected_org_units is not provided, derive from data to create complete grid
-        # This ensures we include all periods even if some have no data
-        if expected_org_units:
-            expected_org_units_list = expected_org_units
-            logging.info(
-                f"Using {len(expected_org_units_list)} ORG_UNITs from config for complete grid"
-            )
-        else:
-            # Derive from data: get all unique ORG_UNITs from all periods
-            if len(exhaustivity_df) > 0:
-                expected_org_units_list = sorted(exhaustivity_df["ORG_UNIT"].unique().to_list())
-                logging.info(
-                    f"Using {len(expected_org_units_list)} ORG_UNITs from data for complete grid "
-                    f"(no ORG_UNITS in config)"
-                )
-            else:
-                # If no data at all, we can't create a grid
-                expected_org_units_list = []
-                logging.warning(
-                    "No expected ORG_UNITs provided and no data available - "
-                    "complete grid will not be created"
-                )
+        # IMPORTANT: Ne PAS créer de grille complète avec des combinaisons qui n'existent pas dans les parquet
+        # On veut seulement les combinaisons qui existent réellement dans les données extraites
+        # Si expected_org_units est None, on n'utilise QUE les combinaisons présentes dans les données (pas de grille complète)
+        # Si expected_org_units est fourni, on vérifie qu'il correspond aux org units des données avant de créer une grille
         
-        # If we have expected periods and ORG_UNITs, create complete grid
-        # Now we need to include DX_UID in the grid (one per COC)
+        create_complete_grid = False
+        expected_org_units_list = []
+        
+        if expected_org_units:
+            # expected_org_units fourni - vérifier s'il correspond aux données
+            if len(exhaustivity_df) > 0:
+                org_units_in_data = set(exhaustivity_df["ORG_UNIT"].unique().to_list())
+                expected_org_units_set = set(expected_org_units)
+                
+                # Créer la grille seulement si les org units attendues correspondent exactement aux org units des données
+                # (pas de grille avec toutes les org units du dataset qui n'existent pas dans les parquet)
+                if expected_org_units_set == org_units_in_data:
+                    create_complete_grid = True
+                    expected_org_units_list = expected_org_units
+                    logging.info(
+                        f"Expected org units match data org units exactly ({len(expected_org_units)}), "
+                        f"creating complete grid for missing periods/COCs"
+                    )
+                else:
+                    logging.info(
+                        f"Expected org units ({len(expected_org_units)}) don't match data org units ({len(org_units_in_data)}). "
+                        f"Skipping complete grid - using only combinations present in data."
+                    )
+            else:
+                logging.info(
+                    "No data available, cannot create complete grid. Using only combinations present in data."
+                )
+        else:
+            # Pas d'expected_org_units = utiliser seulement les combinaisons présentes dans les données
+            logging.info(
+                "No expected_org_units provided - using only combinations present in extracted data (no complete grid)"
+            )
+        
+        # Si on doit créer une grille complète
         expected_df = None
-        if expected_periods and expected_org_units_list and all_expected_cocs:
+        if create_complete_grid and expected_periods and expected_org_units_list and all_expected_cocs:
             # Build expected combinations: for each COC, get all its DX_UIDs
             grid_rows = []
             for coc in all_expected_cocs:
                 dx_uids_for_coc = expected_dx_uids_by_coc.get(coc, [])
                 if not dx_uids_for_coc:
-                    # If no DX_UIDs for this COC, skip it or use empty list
                     continue
                 for period in expected_periods:
                     for org_unit in expected_org_units_list:
@@ -565,18 +578,8 @@ def compute_exhaustivity(
                     f"{len(expected_org_units_list)} ORG_UNITs × avg {sum(len(expected_dx_uids_by_coc.get(coc, [])) for coc in all_expected_cocs) / max(len(all_expected_cocs), 1):.1f} DX_UIDs per COC = {total_expected} combinations"
                 )
             else:
-                # If no grid rows (e.g., expected_dx_uids_by_coc is empty), skip grid creation
                 logging.warning("No grid rows to create (expected_dx_uids_by_coc is empty or no COCs). Skipping complete grid.")
-        else:
-            if not expected_periods:
-                logging.warning("No expected periods, cannot create complete grid.")
-            if not expected_org_units_list:
-                logging.warning("No expected ORG_UNITs, cannot create complete grid.")
-            if not all_expected_cocs:
-                logging.warning("No expected COCs, cannot create complete grid.")
-            
-            # Left join with computed exhaustivity
-            # Missing combinations will have null EXHAUSTIVITY_VALUE
+        
         if expected_df is not None:
             if len(exhaustivity_df) > 0:
                 complete_exhaustivity = expected_df.join(
@@ -613,18 +616,11 @@ def compute_exhaustivity(
             
             exhaustivity_df = complete_exhaustivity
         else:
-            # If no grid was created, use exhaustivity_df as-is (may be empty)
-            # This happens when expected_dx_uids_by_coc is empty or no COCs/periods/org_units
-            logging.warning("No complete grid created, using exhaustivity_df as-is (may be empty)")
-            if expected_periods and not expected_org_units_list:
+            # Pas de grille complète créée - utiliser seulement les combinaisons présentes dans les données
+            logging.info("No complete grid created - using only combinations present in extracted data")
+            if len(exhaustivity_df) == 0:
                 current_run.log_warning(
-                    "Expected ORG_UNITs not provided, cannot create complete grid. "
-                    "Only combinations with data will be included."
-                )
-            elif not expected_periods and expected_org_units_list:
-                current_run.log_warning(
-                    "Expected periods not provided, cannot create complete grid. "
-                    "Only combinations with data will be included."
+                    "No exhaustivity data computed. Only combinations with data in parquet files will be included."
                 )
         
         # Log summary only if exhaustivity_df is not empty
