@@ -282,12 +282,18 @@ def handle_data_element_extracts(
         # run data elements extraction per period
         for period in extract_periods:
             try:
-                dhis2_extractor.analytics_data_elements.download_period(
+                output_file = dhis2_extractor.analytics_data_elements.download_period(
                     data_elements=data_element_uids,
                     org_units=org_units,
                     period=period,
                     output_dir=pipeline_path / "data" / "extracts" / folder_name,
                 )
+                if output_file is None:
+                    current_run.log_warning(f"Extract {extract_id} download returned None for period {period}. No file created.")
+                elif not output_file.exists():
+                    current_run.log_warning(f"Extract {extract_id} download returned path {output_file} but file does not exist for period {period}.")
+                else:
+                    current_run.log_info(f"Extract {extract_id} successfully created file for period {period}: {output_file}")
 
             except Exception as e:
                 error_type = type(e).__name__
@@ -596,14 +602,15 @@ def compute_exhaustivity_and_queue(
             )
             continue
 
-        # Save exhaustivity data with DX_UID (matching CMM format)
-        # Keep all columns: PERIOD, DX_UID, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
-        period_exhaustivity_simplified = period_exhaustivity.select([
+        # Save exhaustivity data without DX_UID - group by (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT)
+        # Since exhaustivity is the same for all DX_UIDs in a (PERIOD, COC, ORG_UNIT) combination,
+        # we group and take the first exhaustivity value
+        period_exhaustivity_simplified = period_exhaustivity.group_by([
             "PERIOD",
-            "DX_UID",
             "CATEGORY_OPTION_COMBO",
-            "ORG_UNIT",
-            "EXHAUSTIVITY_VALUE"
+            "ORG_UNIT"
+        ]).agg([
+            pl.col("EXHAUSTIVITY_VALUE").first().alias("EXHAUSTIVITY_VALUE")
         ])
 
         try:
@@ -648,10 +655,11 @@ def format_for_exhaustivity_import(
     ----------
     exhaustivity_df : pl.DataFrame
         DataFrame with columns: PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
+        (DX_UID is NOT present in the processed data - it will be reconstructed from mappings)
     original_data : pl.DataFrame, optional
         Original data to determine expected DX_UIDs for each COC. If not provided, will try to use push_config.
     pipeline_path : Path, optional
-        Path to the pipeline directory. Required if original_data is not provided.
+        Path to the pipeline directory. Required if DX_UID needs to be reconstructed from mappings.
     extract_id : str, optional
         Extract ID. Used to match with push_config if needed.
     extract_config_item : dict, optional
@@ -661,26 +669,18 @@ def format_for_exhaustivity_import(
     -------
     pl.DataFrame
         A DataFrame formatted for DHIS2 import with columns:
-        DATA_TYPE, DX_UID, PERIOD, ORG_UNIT, VALUE, etc.
+        DATA_TYPE, DX_UID, PERIOD, ORG_UNIT, CATEGORY_OPTION_COMBO, VALUE, etc.
         Creates one entry per DX_UID expected for each COC.
     """
-    # DX_UID is always present in exhaustivity_df (computed by compute_exhaustivity)
-    # No need to load expected_dx_uids_by_coc - we use DX_UID directly from the DataFrame
+    from utils import load_configuration
     
-    # DX_UID is already in exhaustivity_df (like CMM format)
-    # Just format for DHIS2 import by adding required columns (like format_for_import in CMM pipeline)
-    current_run.log_info(
-        f"Formatting exhaustivity data for import: {len(exhaustivity_df)} entries "
-        f"(DX_UID already present, matching CMM format)"
-    )
-    
-    # DX_UID should always be present in exhaustivity_df (computed by compute_exhaustivity)
-    # The parquet file always contains DX_UID, even if exhaustivity_value is 0
-    if "DX_UID" not in exhaustivity_df.columns:
+    # Check required columns
+    required_cols = ["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"]
+    missing_cols = [col for col in required_cols if col not in exhaustivity_df.columns]
+    if missing_cols:
         current_run.log_error(
-            "DX_UID not found in exhaustivity_df. This should never happen - "
-            "compute_exhaustivity always includes DX_UID in the output. "
-            "Please check the exhaustivity calculation logic."
+            f"Missing required columns in exhaustivity_df: {missing_cols}. "
+            f"Expected columns: {required_cols}"
         )
         return pl.DataFrame({
             "DATA_TYPE": [],
@@ -694,32 +694,196 @@ def format_for_exhaustivity_import(
             "DOMAIN_TYPE": [],
         })
     
-    current_run.log_info("DX_UID present in exhaustivity_df, using directly (matching CMM format)")
-    
-    # Check if CATEGORY_OPTION_COMBO exists in exhaustivity_df
-    if "CATEGORY_OPTION_COMBO" not in exhaustivity_df.columns:
-        current_run.log_error(
-            "CATEGORY_OPTION_COMBO not found in exhaustivity_df. "
-            "This column should be present as it comes from compute_exhaustivity. "
-            "Please check the exhaustivity calculation logic."
+    # Check if DX_UID is already present (backward compatibility with old format)
+    if "DX_UID" in exhaustivity_df.columns:
+        current_run.log_info(
+            f"Formatting exhaustivity data for import: {len(exhaustivity_df)} entries "
+            f"(DX_UID already present, using directly)"
         )
-        return pl.DataFrame({
-            "DATA_TYPE": [],
-            "DX_UID": [],
-            "PERIOD": [],
-            "ORG_UNIT": [],
-            "CATEGORY_OPTION_COMBO": [],
-            "ATTRIBUTE_OPTION_COMBO": [],
-            "VALUE": [],
-            "RATE_TYPE": [],
-            "DOMAIN_TYPE": [],
-        })
+        df_with_dx_uid = exhaustivity_df
+    else:
+        # DX_UID not present - need to reconstruct from mappings
+        current_run.log_info(
+            f"Formatting exhaustivity data for import: {len(exhaustivity_df)} entries "
+            f"(DX_UID not present, reconstructing from mappings)"
+        )
+        
+        # Build expected_dx_uids_by_coc from mappings (same logic as compute_exhaustivity)
+        expected_dx_uids_by_coc: dict[str, list[str]] = {}
+        extract_mappings = {}
+        
+        # 1) Try to get mappings from push_config first
+        if pipeline_path:
+            try:
+                push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+                push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+                
+                # Try to find matching extract by EXTRACT_UID
+                matching_extract = None
+                matching_extract = next(
+                    (e for e in push_extracts if e.get("EXTRACT_UID") == extract_id),
+                    None
+                )
+                
+                # If found but has empty mappings, or not found, try alternative names
+                if not matching_extract or not matching_extract.get("MAPPINGS"):
+                    if extract_id and ("Fosa" in extract_id or "fosa" in extract_id.lower()):
+                        alt_extract = next(
+                            (e for e in push_extracts if e.get("EXTRACT_UID") == "level_fosa"),
+                            None
+                        )
+                        if alt_extract and alt_extract.get("MAPPINGS"):
+                            matching_extract = alt_extract
+                    elif extract_id and ("BCZ" in extract_id or "zs" in extract_id.lower()):
+                        alt_extract = next(
+                            (e for e in push_extracts if e.get("EXTRACT_UID") == "level_zs"),
+                            None
+                        )
+                        if alt_extract and alt_extract.get("MAPPINGS"):
+                            matching_extract = alt_extract
+                
+                if matching_extract:
+                    push_mappings = matching_extract.get("MAPPINGS", {})
+                    if push_mappings:
+                        found_via_alternative = matching_extract.get("EXTRACT_UID") in ["level_fosa", "level_zs"]
+                        
+                        if extract_config_item and extract_config_item.get("UIDS") and not found_via_alternative:
+                            extract_uids = set(extract_config_item.get("UIDS", []))
+                            for uid, mapping in push_mappings.items():
+                                target_uid = mapping.get("UID", "")
+                                if uid in extract_uids or target_uid in extract_uids:
+                                    extract_mappings[uid] = mapping
+                        else:
+                            extract_mappings.update(push_mappings)
+                        
+                        if extract_mappings:
+                            via_info = f" (found via {matching_extract.get('EXTRACT_UID')})" if found_via_alternative else ""
+                            current_run.log_info(f"Loaded {len(extract_mappings)} mappings from push_config for {extract_id}{via_info}")
+            except Exception as e:
+                current_run.log_warning(f"Could not load mappings from push_config: {e!s}")
+        
+        # 2) If no mappings in push_config, try extract_config as fallback
+        if not extract_mappings and extract_config_item:
+            extract_mappings = extract_config_item.get("MAPPINGS", {})
+            if extract_mappings:
+                current_run.log_info(f"Loaded {len(extract_mappings)} mappings from extract_config for {extract_id}")
+        
+        # 3) Build expected_dx_uids_by_coc from mappings (indexed by COC SOURCE, using DX_UID SOURCE)
+        # Note: The processed data contains COC SOURCE values (from compute_exhaustivity),
+        # so we need to index by COC SOURCE and use DX_UID SOURCE.
+        # The mappings will be applied later in process_extract_files to transform SOURCE → TARGET.
+        if extract_mappings:
+            if extract_config_item and extract_config_item.get("UIDS"):
+                relevant_dx_uids_source = set(extract_config_item.get("UIDS", []))
+            else:
+                relevant_dx_uids_source = None
+            
+            expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
+            for dx_uid_source, mapping in extract_mappings.items():
+                if relevant_dx_uids_source and dx_uid_source not in relevant_dx_uids_source:
+                    continue
+                
+                coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
+                # IMPORTANT: The processed data contains COC TARGET values (same as extracted data),
+                # so we must index by COC TARGET, not COC SOURCE
+                # The mapping structure is: COC SOURCE -> COC TARGET, so we use TARGET as index
+                for src_coc, target_coc in coc_map.items():
+                    if target_coc is None:
+                        continue
+                    target_coc_str = str(target_coc).strip()
+                    if not target_coc_str:
+                        continue
+                    # Index by COC TARGET (processed data has TARGET values), use DX_UID SOURCE
+                    expected_dx_uids_by_coc_sets.setdefault(target_coc_str, set()).add(str(dx_uid_source))
+            
+            expected_dx_uids_by_coc = {
+                coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
+            }
+            current_run.log_info(
+                f"Expected DX_UIDs per COC loaded from mappings (indexed by COC TARGET): {len(expected_dx_uids_by_coc)} COCs"
+            )
+        
+        # 4) Fallback: if no mappings available, derive from original_data
+        if not expected_dx_uids_by_coc and original_data is not None and len(original_data) > 0:
+            if extract_config_item and extract_config_item.get("UIDS"):
+                relevant_dx_uids = set(extract_config_item.get("UIDS", []))
+                original_data_filtered = original_data.filter(pl.col("DX_UID").is_in(list(relevant_dx_uids)))
+            else:
+                original_data_filtered = original_data
+            
+            if len(original_data_filtered) > 0:
+                coc_dx_uids_df = (
+                    original_data_filtered.group_by("CATEGORY_OPTION_COMBO")
+                    .agg(pl.col("DX_UID").unique().sort().alias("DX_UIDs"))
+                )
+                expected_dx_uids_by_coc = {
+                    row["CATEGORY_OPTION_COMBO"]: row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]]
+                    for row in coc_dx_uids_df.iter_rows(named=True)
+                }
+                current_run.log_info(
+                    f"Expected DX_UIDs per COC derived from original_data (fallback): {len(expected_dx_uids_by_coc)} COCs"
+                )
+        
+        # IMPORTANT: For exhaustivity, we need 1 data point per (PERIOD, ORG_UNIT, COC) 
+        # with the TARGET dataElement (not the source DX_UIDs which multiply entries).
+        # The target dataElement is obtained from mappings after transformation.
+        # For now, we keep 1 row per (PERIOD, COC, ORG_UNIT) and let the mapping 
+        # transform COC source → COC target and add the target dataElement.
+        
+        # Get target dataElement UID from mappings
+        # For exhaustivity, there should be ONE target dataElement per extract
+        target_data_element = None
+        
+        # Try to get matching_extract for TARGET_DATA_ELEMENT_UID lookup
+        matching_extract_for_target = None
+        if pipeline_path:
+            try:
+                push_config_check = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+                push_extracts_check = push_config_check.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+                matching_extract_for_target = next(
+                    (e for e in push_extracts_check if e.get("EXTRACT_UID") == extract_id),
+                    None
+                )
+            except:
+                pass
+        
+        if extract_mappings:
+            # Try to get target dataElement from TARGET_DATA_ELEMENT_UID in config
+            if matching_extract_for_target and matching_extract_for_target.get("TARGET_DATA_ELEMENT_UID"):
+                target_data_element = matching_extract_for_target.get("TARGET_DATA_ELEMENT_UID")
+                current_run.log_info(f"Using TARGET_DATA_ELEMENT_UID from config: {target_data_element}")
+            else:
+                # Fallback: use first mapping's target UID (assuming all map to same target)
+                first_mapping = next(iter(extract_mappings.values()), None)
+                if first_mapping:
+                    target_data_element = first_mapping.get("UID")
+                    if target_data_element:
+                        current_run.log_info(f"Using target dataElement from first mapping: {target_data_element}")
+        
+        if not target_data_element:
+            current_run.log_warning(
+                "Could not determine target dataElement from mappings. "
+                "Will use placeholder - mapping should set correct dataElement."
+            )
+            # Use a placeholder that will be replaced by mapping
+            target_data_element = "PLACEHOLDER_NEEDS_MAPPING"
+        
+        # Keep 1 row per (PERIOD, COC, ORG_UNIT) - DO NOT multiply by DX_UIDs
+        # Add target dataElement as DX_UID (will be mapped later)
+        df_with_dx_uid = exhaustivity_df.with_columns([
+            pl.lit(target_data_element).cast(pl.Utf8).alias("DX_UID")
+        ])
+        
+        current_run.log_info(
+            f"Formatted for import: {len(exhaustivity_df)} combinations → {len(df_with_dx_uid)} entries "
+            f"(1 data point per PERIOD/COC/ORG_UNIT with target dataElement: {target_data_element})"
+        )
     
     # Format for DHIS2 import (like format_for_import in CMM pipeline)
-    df_final = exhaustivity_df.with_columns([
+    df_final = df_with_dx_uid.with_columns([
         pl.lit("DATA_ELEMENT").alias("DATA_TYPE"),
-        pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID"),  # Already present, ensure String type
-        pl.col("CATEGORY_OPTION_COMBO").cast(pl.Utf8).alias("CATEGORY_OPTION_COMBO"),  # Already present
+        pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID"),
+        pl.col("CATEGORY_OPTION_COMBO").cast(pl.Utf8).alias("CATEGORY_OPTION_COMBO"),
         pl.col("EXHAUSTIVITY_VALUE").cast(pl.Int64).alias("VALUE"),
         pl.lit(None).cast(pl.Utf8).alias("ATTRIBUTE_OPTION_COMBO"),
         pl.lit(None).cast(pl.Utf8).alias("RATE_TYPE"),

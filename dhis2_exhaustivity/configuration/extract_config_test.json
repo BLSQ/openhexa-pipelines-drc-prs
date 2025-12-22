@@ -4,8 +4,7 @@
         "STARTDATE": "202507",
         "ENDDATE": "202512",
         "MODE": "DOWNLOAD_REPLACE",
-        "MAX_ORG_UNITS_FOR_TEST": 5,
-        "EXTRACTION_MONTHS_WINDOW": 6
+        "EXTRACTION_MONTHS_WINDOW": 3
     },
     "DATA_ELEMENTS": {
         "EXTRACTS": [

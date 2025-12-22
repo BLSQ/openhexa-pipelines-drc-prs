@@ -59,15 +59,17 @@ def compute_exhaustivity(
 ) -> pl.DataFrame:
     """Computes exhaustivity from extracted data based on VALUE null checks.
     
-    For each combination of (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT), checks if all DX_UIDs
-    have a non-null VALUE. If all values are filled, exhaustivity = 1, otherwise 0.
+    For each combination of (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT), checks if all DX_UIDs mappés
+    (selon les mappings pour ce COC) sont présents ET ont des valeurs non-null/non-vides.
     
-    If a DX_UID is missing for a (PERIOD, COC, ORG_UNIT) combination (form not submitted),
-    exhaustivity = 0 (form not sent at all).
-    
-    Each CATEGORY_OPTION_COMBO represents a category, and we check if all DX_UIDs (medications)
-    have values for this category in the period and org unit. If any VALUE is null or missing
-    for a (PERIOD, COC, ORG_UNIT) combination, exhaustivity = 0.
+    Logic:
+    - For each (PERIOD, ORG_UNIT, COC) combination:
+      - Récupérer les DX_UIDs mappés pour ce COC spécifique (selon les mappings)
+      - Vérifier que TOUS ces DX_UIDs mappés sont présents dans les données
+      - Vérifier que TOUS ces DX_UIDs mappés ont des valeurs non-null/non-vides
+      - Si TOUS sont présents ET non-null → exhaustivity = 1
+      - Si UN DX_UID mappé est manquant OU a une valeur null/vide → exhaustivity = 0
+    - Si un COC n'est pas présent dans les données → exhaustivity = 0 (COC manquant)
     
     Parameters
     ----------
@@ -358,31 +360,31 @@ def compute_exhaustivity(
             else:
                 relevant_dx_uids_source = None
             
-            # Build expected_dx_uids_by_coc from mappings (COC SOURCE → DX_UID SOURCE pairs)
-            # This defines valid pairs: for each COC SOURCE, which DX_UIDs SOURCE are associated
-            # We use SOURCE values because mappings are NOT applied before exhaustivity calculation
+            # Build expected_dx_uids_by_coc from mappings
+            # IMPORTANT: The extracted data contains COC TARGET values (as returned by DHIS2 analytics API),
+            # so we must index by COC TARGET, not COC SOURCE
+            # The mapping structure is: COC SOURCE -> COC TARGET, so we invert it: COC TARGET -> DX_UID SOURCE
             expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
             for dx_uid_source, mapping in extract_mappings.items():
                 if relevant_dx_uids_source and dx_uid_source not in relevant_dx_uids_source:
                     continue
                 coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
-                # Index by COC SOURCE (keys of coc_map), use DX_UID SOURCE
-                # This defines which (COC SOURCE, DX_UID SOURCE) pairs are valid
+                # Index by COC TARGET (values of coc_map), use DX_UID SOURCE
+                # This is because extracted data contains COC TARGET values
                 for src_coc, target_coc in coc_map.items():
                     if target_coc is None:
                         continue
-                    src_coc_str = str(src_coc).strip()
-                    if not src_coc_str:
+                    target_coc_str = str(target_coc).strip()
+                    if not target_coc_str:
                         continue
-                    # Index by COC SOURCE, use DX_UID SOURCE (before mapping)
-                    # This ensures we only calculate exhaustivity for valid pairs
-                    expected_dx_uids_by_coc_sets.setdefault(src_coc_str, set()).add(str(dx_uid_source))
+                    # Index by COC TARGET (extracted data has TARGET values), use DX_UID SOURCE
+                    expected_dx_uids_by_coc_sets.setdefault(target_coc_str, set()).add(str(dx_uid_source))
             
             expected_dx_uids_by_coc = {
                 coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
             }
             logging.info(
-                f"Expected DX_UIDs per COC loaded from mappings (indexed by COC SOURCE): {len(expected_dx_uids_by_coc)} COCs"
+                f"Expected DX_UIDs per COC loaded from mappings (indexed by COC TARGET): {len(expected_dx_uids_by_coc)} COCs"
             )
         
         # 4) Fallback: if no mappings available, derive from extracted data (using SOURCE values)
@@ -424,29 +426,71 @@ def compute_exhaustivity(
             ])
         )
         
-        # Check exhaustivity: all expected DX_UIDs must be present AND non-null
+        # Create a complete grid of all possible (PERIOD, COC, ORG_UNIT) combinations
+        # This ensures that missing COCs are marked with exhaustivity = 0
+        periods_in_data = df["PERIOD"].unique().to_list() if len(df) > 0 else []
+        # Use expected_org_units if provided, otherwise derive from data (like previous push)
+        if expected_org_units and len(expected_org_units) > 0:
+            org_units_in_data = expected_org_units
+        else:
+            org_units_in_data = df["ORG_UNIT"].unique().to_list() if len(df) > 0 else []
+        cocs_in_mappings = list(expected_dx_uids_by_coc.keys()) if expected_dx_uids_by_coc else []
+        
+        # Build a set of (PERIOD, COC, ORG_UNIT) combinations present in data
+        present_combinations = set()
+        for row in df_grouped_for_log.iter_rows(named=True):
+            period = row["PERIOD"]
+            coc = row["CATEGORY_OPTION_COMBO"]
+            org_unit = row["ORG_UNIT"]
+            present_combinations.add((period, coc, org_unit))
+        
+        # Check exhaustivity: for each (PERIOD, ORG_UNIT, COC), check if all expected DX_UIDs (from mappings) are present AND non-null
+        # Logic: exhaustivity = 1 if all expected DX_UIDs for this COC are present with non-null values, 0 otherwise
+        # We only check valid (DX_UID, COC) pairs according to mappings
         # Note: Using iter_rows here is acceptable for complex set operations
         # The performance impact is minimal compared to I/O operations
         exhaustivity_rows = []
+        
+        # First, process all combinations present in data
         for row in df_grouped_for_log.iter_rows(named=True):
             period = row["PERIOD"]
             coc = row["CATEGORY_OPTION_COMBO"]
             org_unit = row["ORG_UNIT"]
             
-            dx_uids_present = set(row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]])
+            dx_uids_present_list = row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]]
             null_flags_list = row["NULL_FLAGS"] if isinstance(row["NULL_FLAGS"], list) else [row["NULL_FLAGS"]]
             
-            # Get expected DX_UIDs for this COC (global, across all periods)
-            expected_dx_uids = set(expected_dx_uids_by_coc.get(coc, []))
+            # Get expected DX_UIDs for this COC from mappings (valid pairs only)
+            expected_dx_uids = set(expected_dx_uids_by_coc.get(coc, [])) if expected_dx_uids_by_coc else set()
             
-            # Check if all expected DX_UIDs are present
-            missing_dx_uids = expected_dx_uids - dx_uids_present
+            # If no mappings, use DX_UIDs present in data (fallback)
+            if not expected_dx_uids:
+                expected_dx_uids = set(dx_uids_present_list)
             
-            # Check if any present DX_UID has null value
-            has_null_value = any(null_flags_list) if null_flags_list else False
+            # Build a map of DX_UID -> null_flag for present DX_UIDs
+            dx_uid_to_null_flag = {
+                dx_uid: null_flag
+                for dx_uid, null_flag in zip(dx_uids_present_list, null_flags_list)
+            }
             
-            # Exhaustivity = 0 if any expected DX_UID is missing OR any value is null
-            exhaustivity_value = 0 if (missing_dx_uids or has_null_value) else 1
+            # Check if ALL DX_UIDs mappés pour ce COC sont présents ET ont des valeurs non-null
+            # Logic: on vérifie seulement les DX_UIDs qui sont mappés pour ce COC spécifique
+            # Si TOUS les DX_UIDs mappés sont présents ET non-null → exhaustivity = 1
+            # Si UN DX_UID mappé est manquant OU a une valeur null/vide → exhaustivity = 0
+            
+            missing_dx_uids = []
+            null_or_empty_dx_uids = []
+            
+            for dx_uid in expected_dx_uids:
+                if dx_uid not in dx_uid_to_null_flag:
+                    # DX_UID mappé manquant (pas présent dans les données)
+                    missing_dx_uids.append(dx_uid)
+                elif dx_uid_to_null_flag[dx_uid]:
+                    # DX_UID mappé présent mais avec valeur null/vide
+                    null_or_empty_dx_uids.append(dx_uid)
+            
+            # Exhaustivity = 1 seulement si TOUS les DX_UIDs mappés sont présents ET non-null
+            exhaustivity_value = 1 if (not missing_dx_uids and not null_or_empty_dx_uids) else 0
             
             # Create one row per expected DX_UID for this COC (like CMM format)
             # This ensures DX_UID is in the exhaustivity file, matching CMM format
@@ -458,6 +502,28 @@ def compute_exhaustivity(
                     "ORG_UNIT": org_unit,
                     "EXHAUSTIVITY_VALUE": exhaustivity_value,
                 })
+        
+        # Add missing (PERIOD, COC, ORG_UNIT) combinations with exhaustivity = 0
+        # This ensures that if a COC is not present in data, it's marked as exhaustivity = 0
+        # Use periods_in_data (local) and org_units_in_data (config or data) to build a full grid
+        periods_for_grid = periods_in_data
+        if cocs_in_mappings and periods_for_grid and org_units_in_data:
+            for period in periods_for_grid:
+                for coc in cocs_in_mappings:
+                    for org_unit in org_units_in_data:
+                        if (period, coc, org_unit) not in present_combinations:
+                            # COC is missing for this (PERIOD, ORG_UNIT) → exhaustivity = 0
+                            expected_dx_uids = set(expected_dx_uids_by_coc.get(coc, [])) if expected_dx_uids_by_coc else set()
+                            if expected_dx_uids:
+                                # Create one row per expected DX_UID for this missing COC
+                                for dx_uid in expected_dx_uids:
+                                    exhaustivity_rows.append({
+                                        "PERIOD": period,
+                                        "DX_UID": dx_uid,
+                                        "CATEGORY_OPTION_COMBO": coc,
+                                        "ORG_UNIT": org_unit,
+                                        "EXHAUSTIVITY_VALUE": 0,  # Missing COC = exhaustivity = 0
+                                    })
         
         # Create the final exhaustivity dataframe
         if exhaustivity_rows:

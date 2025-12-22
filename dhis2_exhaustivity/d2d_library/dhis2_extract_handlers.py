@@ -59,16 +59,20 @@ class AnanalyticsDataElementExtractor:
         if not self.extractor._valid_dhis2_period_format(period):
             raise ValueError(f"Invalid DHIS2 period format: {period}")
         try:
+            current_run.log_info(f"Requesting analytics data: {len(data_elements)} data elements, {len(org_units)} org units, period {period}")
             response = self.extractor.dhis2_client.analytics.get(
                 data_elements=data_elements,
                 periods=[period],
                 org_units=org_units,
                 include_cocs=True,
             )
+            current_run.log_info(f"Analytics API returned {len(response) if isinstance(response, list) else 'non-list'} items")
         except Exception as e:
             raise Exception(f"Error retrieving data elements data: {e}") from e
 
-        return self._map_to_dhis2_format_analytics(pl.DataFrame(response))
+        df_response = pl.DataFrame(response)
+        current_run.log_info(f"Converted to DataFrame: {len(df_response)} rows")
+        return self._map_to_dhis2_format_analytics(df_response)
 
     def _map_to_dhis2_format_analytics(
         self,
@@ -351,7 +355,7 @@ class DHIS2Extractor:
 
     def _handle_extract_for_period(
         self,
-        handler: DataElementsExtractor | IndicatorsExtractor | ReportingRatesExtractor,
+        handler: DataElementsExtractor | IndicatorsExtractor | ReportingRatesExtractor | AnanalyticsDataElementExtractor,
         data_products: list[str],
         org_units: list[str],
         period: str,
@@ -375,10 +379,16 @@ class DHIS2Extractor:
             current_run.log_info(f"Nothing to save for period {period}.")
             return None
 
+        # Check if DataFrame is empty
+        if raw_data.is_empty():
+            current_run.log_info(f"Empty DataFrame retrieved for period {period}. Saving empty file with schema.")
+            # Still save empty DataFrame to have a trace file
+
         if extract_fname.exists():
             current_run.log_info(f"Replacing extract for period {period}.")
 
         self.save_to_parquet(raw_data, extract_fname)
+        current_run.log_info(f"Saved extract file for period {period}: {extract_fname} ({len(raw_data)} rows)")
         return extract_fname
 
     def _map_to_dhis2_format(
