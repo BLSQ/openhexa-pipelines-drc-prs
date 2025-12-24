@@ -1266,6 +1266,17 @@ def process_extract_files(
         folder_name = f"Extract {extract_id}"
     extracts_folder = pipeline_path / "data" / "extracts" / folder_name
     
+    # Get TARGET_DATA_ELEMENT_UID from push_config for this extract
+    push_config = load_configuration(config_path=Path(__file__).parent / "configuration" / "push_config.json")
+    push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+    push_extract_config = next((e for e in push_extracts if e.get("EXTRACT_UID") == extract_id), {})
+    target_data_element_uid = push_extract_config.get("TARGET_DATA_ELEMENT_UID")
+    
+    if not target_data_element_uid:
+        current_run.log_warning(f"⚠️  No TARGET_DATA_ELEMENT_UID found in push_config for {extract_id}")
+    else:
+        current_run.log_info(f"🎯 Using TARGET_DATA_ELEMENT_UID: {target_data_element_uid} for {extract_id}")
+    
     # Process all files and collect DataFrames
     all_dataframes = []
     periods_processed = []
@@ -1278,72 +1289,95 @@ def process_extract_files(
             # Read with polars
             exhaustivity_df_pl = pl.read_parquet(extract_path)
             
-            # For org-level aggregated files we keep only PERIOD, ORG_UNIT, EXHAUSTIVITY_VALUE
-            # Do not add CATEGORY_OPTION_COMBO back
-            if "CATEGORY_OPTION_COMBO" not in exhaustivity_df_pl.columns:
-                pass
-            
             # Extract period from DataFrame
             period = None
             if len(exhaustivity_df_pl) > 0 and "PERIOD" in exhaustivity_df_pl.columns:
                 period = exhaustivity_df_pl["PERIOD"].unique().to_list()[0]
                 periods_processed.append(period)
             
-            # Read original data if available (for fallback)
-            original_data = None
-            if period:
-                period_file = extracts_folder / f"data_{period}.parquet"
-                if period_file.exists():
-                    try:
-                        original_data = pl.read_parquet(period_file)
-                    except Exception:
-                        pass
+            # Check if this is an org-level aggregated exhaustivity file (PERIOD, ORG_UNIT, EXHAUSTIVITY_VALUE only)
+            is_org_level_aggregated = (
+                "EXHAUSTIVITY_VALUE" in exhaustivity_df_pl.columns and
+                "CATEGORY_OPTION_COMBO" not in exhaustivity_df_pl.columns
+            )
             
-            # Check if file is already formatted for DHIS2 import
-            if "VALUE" in exhaustivity_df_pl.columns and "EXHAUSTIVITY_VALUE" not in exhaustivity_df_pl.columns:
-                df_final = exhaustivity_df_pl
-                required_cols = ["DATA_TYPE", "DX_UID", "PERIOD", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "ATTRIBUTE_OPTION_COMBO", "VALUE", "RATE_TYPE", "DOMAIN_TYPE"]
-                for col in required_cols:
-                    if col not in df_final.columns:
-                        df_final = df_final.with_columns([pl.lit(None).cast(pl.Utf8).alias(col)])
-            else:
-                df_final = format_for_exhaustivity_import(
-                    exhaustivity_df_pl,
-                    original_data=original_data,
-                    pipeline_path=pipeline_path,
-                    extract_id=extract_id,
-                    extract_config_item=extract_config_item,
-                )
-            
-            if df_final.is_empty():
-                current_run.log_warning(f"⚠️  Empty DataFrame after formatting for {extract_id} (file: {short_path}), skipping")
-                continue
-
-            # Apply mapping
-            file_already_formatted = "VALUE" in exhaustivity_df_pl.columns and "EXHAUSTIVITY_VALUE" not in exhaustivity_df_pl.columns
-            
-            if file_already_formatted:
-                df_mapped = df_final
-                if "DX_UID" in df_mapped.columns and df_mapped["DX_UID"].dtype == pl.List:
-                    current_run.log_warning(f"⚠️  DX_UID is a List in {short_path}, exploding to create one row per DX_UID")
-                    rows_before = len(df_mapped)
-                    df_mapped = df_mapped.explode("DX_UID")
-                    df_mapped = df_mapped.with_columns([
-                        pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID")
-                    ])
-                    rows_after = len(df_mapped)
-                    current_run.log_info(f"   Exploded: {rows_before} → {rows_after} rows")
-            else:
-                cfg_list, mapper_func = dispatch_map["DATA_ELEMENT"]
-                extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
-
-                if not extract_config:
-                    current_run.log_warning(f"Extract config not found in push_config for {extract_id}, pushing without mappings")
-                else:
-                    target_dataset = extract_config.get("TARGET_DATASET_UID", "unknown")
-                    current_run.log_info(f"   Using mappings for {extract_id} → TARGET_DATASET_UID: {target_dataset}")
+            if is_org_level_aggregated:
+                # Simple format: just add DX_UID from config and rename EXHAUSTIVITY_VALUE to VALUE
+                # Use DHIS2 default COC/AOC
+                DEFAULT_COC = "HllvX50cXC0"  # default categoryOptionCombo
+                DEFAULT_AOC = "HllvX50cXC0"  # default attributeOptionCombo
                 
-                df_mapped = mapper_func(df=df_final, extract_config=extract_config)
+                if not target_data_element_uid:
+                    current_run.log_error(f"❌ Cannot process {short_path}: no TARGET_DATA_ELEMENT_UID configured")
+                    continue
+                
+                df_mapped = exhaustivity_df_pl.with_columns([
+                    pl.lit(target_data_element_uid).alias("DX_UID"),
+                    pl.col("EXHAUSTIVITY_VALUE").cast(pl.Utf8).alias("VALUE"),
+                    pl.lit(DEFAULT_COC).alias("CATEGORY_OPTION_COMBO"),
+                    pl.lit(DEFAULT_AOC).alias("ATTRIBUTE_OPTION_COMBO"),
+                ]).select([
+                    "DX_UID", "PERIOD", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "ATTRIBUTE_OPTION_COMBO", "VALUE"
+                ])
+                
+                current_run.log_info(f"   ✓ Formatted org-level aggregated: {short_path} → {len(df_mapped)} rows, DX_UID={target_data_element_uid}")
+            else:
+                # Legacy format with CATEGORY_OPTION_COMBO - use old logic
+                # Read original data if available (for fallback)
+                original_data = None
+                if period:
+                    period_file = extracts_folder / f"data_{period}.parquet"
+                    if period_file.exists():
+                        try:
+                            original_data = pl.read_parquet(period_file)
+                        except Exception:
+                            pass
+                
+                # Check if file is already formatted for DHIS2 import
+                if "VALUE" in exhaustivity_df_pl.columns and "EXHAUSTIVITY_VALUE" not in exhaustivity_df_pl.columns:
+                    df_final = exhaustivity_df_pl
+                    required_cols = ["DATA_TYPE", "DX_UID", "PERIOD", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "ATTRIBUTE_OPTION_COMBO", "VALUE", "RATE_TYPE", "DOMAIN_TYPE"]
+                    for col in required_cols:
+                        if col not in df_final.columns:
+                            df_final = df_final.with_columns([pl.lit(None).cast(pl.Utf8).alias(col)])
+                else:
+                    df_final = format_for_exhaustivity_import(
+                        exhaustivity_df_pl,
+                        original_data=original_data,
+                        pipeline_path=pipeline_path,
+                        extract_id=extract_id,
+                        extract_config_item=extract_config_item,
+                    )
+                
+                if df_final.is_empty():
+                    current_run.log_warning(f"⚠️  Empty DataFrame after formatting for {extract_id} (file: {short_path}), skipping")
+                    continue
+
+                # Apply mapping
+                file_already_formatted = "VALUE" in exhaustivity_df_pl.columns and "EXHAUSTIVITY_VALUE" not in exhaustivity_df_pl.columns
+                
+                if file_already_formatted:
+                    df_mapped = df_final
+                    if "DX_UID" in df_mapped.columns and df_mapped["DX_UID"].dtype == pl.List:
+                        current_run.log_warning(f"⚠️  DX_UID is a List in {short_path}, exploding to create one row per DX_UID")
+                        rows_before = len(df_mapped)
+                        df_mapped = df_mapped.explode("DX_UID")
+                        df_mapped = df_mapped.with_columns([
+                            pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID")
+                        ])
+                        rows_after = len(df_mapped)
+                        current_run.log_info(f"   Exploded: {rows_before} → {rows_after} rows")
+                else:
+                    cfg_list, mapper_func = dispatch_map["DATA_ELEMENT"]
+                    extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
+
+                    if not extract_config:
+                        current_run.log_warning(f"Extract config not found in push_config for {extract_id}, pushing without mappings")
+                    else:
+                        target_dataset = extract_config.get("TARGET_DATASET_UID", "unknown")
+                        current_run.log_info(f"   Using mappings for {extract_id} → TARGET_DATASET_UID: {target_dataset}")
+                    
+                    df_mapped = mapper_func(df=df_final, extract_config=extract_config)
             
             # Check if mapped DataFrame is empty
             if df_mapped.is_empty() if hasattr(df_mapped, 'is_empty') else len(df_mapped) == 0:

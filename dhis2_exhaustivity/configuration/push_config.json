@@ -13,6 +13,7 @@
                 "EXTRACT_UID": "Fosa_exhaustivity_data_elements",
                 "SOURCE_DATASET_UID": "wMCnDAQfGZN",
                 "TARGET_DATASET_UID": "z774dF9QToi",
+                "TARGET_DATA_ELEMENT_UID": "kaxgZZLAwGf",
                 "MAPPINGS": {
                     "imqSmhfQTPN": {
                         "UID": "imqSmhfQTPN",
@@ -362,6 +363,7 @@
                 "EXTRACT_UID": "BCZ_exhaustivity_data_elements",
                 "SOURCE_DATASET_UID": "Om2WgL4TNEy",
                 "TARGET_DATASET_UID": "xrNLUayA875",
+                "TARGET_DATA_ELEMENT_UID": "tRMSUzNvN8e",
                 "MAPPINGS": {
                     "BNYzDZBVOBP": {
                         "UID": "BNYzDZBVOBP",
