@@ -602,28 +602,28 @@ def compute_exhaustivity_and_queue(
             )
             continue
 
-        # Save exhaustivity data without DX_UID - group by (PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT)
-        # Since exhaustivity is the same for all DX_UIDs in a (PERIOD, COC, ORG_UNIT) combination,
-        # we group and take the first exhaustivity value
-        period_exhaustivity_simplified = period_exhaustivity.group_by([
-            "PERIOD",
-            "CATEGORY_OPTION_COMBO",
-            "ORG_UNIT"
-        ]).agg([
-            pl.col("EXHAUSTIVITY_VALUE").first().alias("EXHAUSTIVITY_VALUE")
-        ])
+        # Save only the aggregated view per (PERIOD, ORG_UNIT): value = 1 only if all COCs for that org/period are 1
+        period_exhaustivity_org_level = (
+            period_exhaustivity
+            .group_by(["PERIOD", "ORG_UNIT"])
+            .agg([pl.col("EXHAUSTIVITY_VALUE").min().alias("EXHAUSTIVITY_VALUE")])
+            .select([pl.col("PERIOD"), pl.col("ORG_UNIT"), pl.col("EXHAUSTIVITY_VALUE")])
+            .drop("CATEGORY_OPTION_COMBO", strict=False)
+        )
 
         try:
-            output_file = output_dir / f"exhaustivity_{period}.parquet"
+            # Write aggregated file in the main processed folder (replaces old COC-level files)
+            aggregated_file = output_dir / f"exhaustivity_{period}.parquet"
             save_to_parquet(
-                data=period_exhaustivity_simplified,
-                filename=output_file,
+                data=period_exhaustivity_org_level,
+                filename=aggregated_file,
             )
-            # Enqueue file for pushing (same pattern as dhis2_cmm_push)
-            push_queue.enqueue(f"{extract_id}|{output_file}")
+            
+            # Enqueue aggregated file for pushing
+            push_queue.enqueue(f"{extract_id}|{aggregated_file}")
             current_run.log_info(
-                f"✅ Saved and enqueued exhaustivity data for {extract_id} - period {period}: "
-                f"{len(period_exhaustivity_simplified)} combinations → {output_file}"
+                f"✅ Saved and enqueued aggregated exhaustivity for {extract_id} - period {period}: "
+                f"{len(period_exhaustivity_org_level)} combis org → {aggregated_file.name}"
             )
         except Exception as e:
             current_run.log_error(f"❌ Error saving exhaustivity data for {extract_id} - period {period}: {e!s}")
@@ -1253,19 +1253,10 @@ def process_extract_files(
             # Read with polars
             exhaustivity_df_pl = pl.read_parquet(extract_path)
             
-            # If CATEGORY_OPTION_COMBO is missing, extract it from filename
+            # For org-level aggregated files we keep only PERIOD, ORG_UNIT, EXHAUSTIVITY_VALUE
+            # Do not add CATEGORY_OPTION_COMBO back
             if "CATEGORY_OPTION_COMBO" not in exhaustivity_df_pl.columns:
-                current_run.log_warning(f"CATEGORY_OPTION_COMBO missing in DataFrame, extracting from filename: {filename}")
-                parts = filename.replace(".parquet", "").split("_")
-                if len(parts) >= 4 and parts[0] == "exhaustivity":
-                    coc_from_filename = parts[3]
-                    current_run.log_info(f"Extracted COC from filename: {coc_from_filename}")
-                    exhaustivity_df_pl = exhaustivity_df_pl.with_columns([
-                        pl.lit(coc_from_filename).cast(pl.Utf8).alias("CATEGORY_OPTION_COMBO")
-                    ])
-                else:
-                    current_run.log_error(f"Could not parse COC from filename: {filename}. Skipping.")
-                    continue
+                pass
             
             # Extract period from DataFrame
             period = None
