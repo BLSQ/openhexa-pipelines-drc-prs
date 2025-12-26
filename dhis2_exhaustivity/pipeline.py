@@ -1,9 +1,9 @@
 import logging
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
 import polars as pl
 import requests
 from exhaustivity_calculation import compute_exhaustivity
@@ -15,11 +15,12 @@ from openhexa.sdk import current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
 from openhexa.toolbox.dhis2.dataframe import get_datasets
 from openhexa.toolbox.dhis2.periods import period_from_string
-from requests.exceptions import HTTPError, RequestException
+# requests.exceptions are handled by dhis2_request function internally
 from utils import (
     configure_logging,
     connect_to_dhis2,
     load_configuration,
+    retrieve_ou_list,
     save_to_parquet,
 )
 
@@ -45,7 +46,7 @@ def dhis2_request(session, method: str, url: str, **kwargs):
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
 # extract data from source DHIS2
-@pipeline("dhis2_exhaustivity")
+@pipeline("dhis2_exhaustivity", timeout=14400)  # 4 hours (3600 * 4)
 @parameter(
     code="run_ou_sync",
     name="Update dataset org units (recommended)",
@@ -92,20 +93,14 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_da
 
     try:
         # 1) Extract data from source DHIS2
-        extract_data(
+        extract_ready = extract_data(
             pipeline_path=pipeline_path,
             run_task=run_extract_data,
         )
 
-        # 2) Compute exhaustivity from extracted data
-        compute_ready = compute_exhaustivity_data(
-            pipeline_path=pipeline_path,
-            run_task=run_compute_data,
-        )
-
-        # 3) Sync dataset org units: copy org units from source dataset to target dataset
+        # 2) Sync dataset org units: copy org units from source dataset to target dataset
         # (both in the same DHIS2 instance - no pyramid sync needed)
-        # This ensures the target dataset has the correct org units before pushing data
+        # This runs in parallel with extract since they don't depend on each other
         if run_ou_sync:
             sync_ready = update_dataset_org_units(
                 pipeline_path=pipeline_path,
@@ -114,9 +109,16 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_da
         else:
             sync_ready = True
 
+        # 3) Compute exhaustivity from extracted data
+        # IMPORTANT: Must wait for extract_data to finish!
+        compute_ready = compute_exhaustivity_data(
+            pipeline_path=pipeline_path,
+            run_task=run_compute_data,
+            wait=extract_ready,  # Wait for extract to finish before computing
+        )
+
         # 4) Apply mappings & push data to target DHIS2
         # IMPORTANT: push_data must wait for both compute_exhaustivity_data AND update_dataset_org_units
-        # to ensure exhaustivity files are created before pushing
         push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
@@ -137,11 +139,11 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_da
 def extract_data(
     pipeline_path: Path,
     run_task: bool = True,
-):
+) -> bool:
     """Extracts data elements from the source DHIS2 instance and saves them in parquet format."""
     if not run_task:
         current_run.log_info("Data elements extraction task skipped.")
-        return
+        return True
 
     current_run.log_info("Data elements extraction task started.")
     configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
@@ -204,7 +206,9 @@ def extract_data(
         data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
         extract_periods=get_periods(start_extraction, end),
         extract_config=extract_config,
-        )
+    )
+    
+    return True
 
 
 def handle_data_element_extracts(
@@ -253,7 +257,6 @@ def handle_data_element_extracts(
         else:
             # Use retrieve_ou_list which filters by level directly (does NOT retrieve full pyramid)
             # This is more efficient than retrieving full pyramid and filtering
-            from utils import retrieve_ou_list
             org_units = retrieve_ou_list(dhis2_client=dhis2_extractor.dhis2_client, ou_level=org_units_level)
             dataset_name = f"Level {org_units_level}"
         
@@ -278,6 +281,22 @@ def handle_data_element_extracts(
             folder_name = f"Extract lvl {org_units_level}"
         else:
             folder_name = f"Extract {extract_id}"
+
+        # Clean old extract files that are outside the requested periods
+        extracts_dir = pipeline_path / "data" / "extracts" / folder_name
+        if extracts_dir.exists():
+            old_files = list(extracts_dir.glob("data_*.parquet"))
+            files_to_delete = [f for f in old_files if f.stem.replace("data_", "") not in extract_periods]
+            if files_to_delete:
+                current_run.log_info(
+                    f"🧹 Cleaning {len(files_to_delete)} old extract file(s) outside window for {extract_id}"
+                )
+                for old_file in files_to_delete:
+                    try:
+                        old_file.unlink()
+                        logging.info(f"Deleted old extract file: {old_file.name}")
+                    except Exception as e:
+                        current_run.log_warning(f"Could not delete old extract file {old_file.name}: {e}")
 
         # run data elements extraction per period
         for period in extract_periods:
@@ -304,7 +323,6 @@ def handle_data_element_extracts(
                 )
                 logging.error(f"Extract {extract_id} - period {period} error ({error_type}): {e!s}")
                 # Log full traceback for debugging
-                import traceback
                 logging.error(f"Full traceback for period {period}:\n{traceback.format_exc()}")
                 continue  # continue with next period instead of stopping the entire extract
 
@@ -342,6 +360,7 @@ def get_periods(start: str, end: str) -> list[str]:
 def compute_exhaustivity_data(
     pipeline_path: Path,
     run_task: bool = True,
+    wait: bool = True,
 ) -> bool:
     """Computes exhaustivity from extracted data and saves the result to processed/ folder.
     
@@ -351,6 +370,8 @@ def compute_exhaustivity_data(
         Path to the pipeline directory.
     run_task : bool
         Whether to run the task or skip it.
+    wait : bool
+        Dependency flag - task waits for this to be True before running.
     """
     if not run_task:
         current_run.log_info("Exhaustivity computation task skipped.")
@@ -372,7 +393,6 @@ def compute_exhaustivity_data(
         current_run.log_warning(f"Could not configure logging: {e!s}")
 
     # Load extract config from root configuration (not workspace copy)
-    from utils import load_configuration
     extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     
     # Get date range (same logic as extract_data)
@@ -402,7 +422,6 @@ def compute_exhaustivity_data(
             current_run.log_info(f"✅ Completed exhaustivity computation for extract: {extract_id}")
         except Exception as e:
             current_run.log_error(f"❌ Error computing exhaustivity for {extract_id}: {e!s}")
-            import traceback
             traceback_str = traceback.format_exc()
             logging.error(f"Full traceback for {extract_id}:\n{traceback_str}")
             # Continue with next extract instead of crashing
@@ -411,6 +430,8 @@ def compute_exhaustivity_data(
     # Enqueue FINISH marker after all extracts are processed
     push_queue.enqueue("FINISH")
     current_run.log_info("✅ FINISH marker enqueued")
+    
+    return True
 
 
 def compute_exhaustivity_and_queue(
@@ -431,7 +452,6 @@ def compute_exhaustivity_and_queue(
         List of periods to process.
     """
     # Load config to get org units level for folder naming
-    from utils import load_configuration
     extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     
     # Find the extract configuration to determine folder name
@@ -492,13 +512,9 @@ def compute_exhaustivity_and_queue(
     # 4) extracted data (all unique ORG_UNITs across all periods) - last resort
     if extract_config_item and extract_config_item.get("ORG_UNITS"):
         expected_org_units = extract_config_item.get("ORG_UNITS")
-        current_run.log_info(
-            f"Using {len(expected_org_units)} expected ORG_UNITs from extract_config.ORG_UNITS"
-        )
     else:
         # Try to get from SOURCE_DATASET_UID in push_config (preferred method)
         try:
-            from utils import load_configuration
             push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
             push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
             source_dataset_uid = None
@@ -509,29 +525,18 @@ def compute_exhaustivity_and_queue(
             
             if source_dataset_uid:
                 # Get org units from source dataset (more limited than full pyramid)
-                from openhexa.toolbox.dhis2.dataframe import get_datasets
-                from utils import connect_to_dhis2
-                config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
-                dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
+                dhis2_client = connect_to_dhis2(connection_str=push_config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
                 datasets = get_datasets(dhis2_client)
                 source_dataset = datasets.filter(pl.col("id").is_in([source_dataset_uid]))
                 if len(source_dataset) > 0:
                     expected_org_units = source_dataset["organisation_units"].explode().to_list()
-                    current_run.log_info(
-                        f"Using {len(expected_org_units)} ORG_UNITs from SOURCE_DATASET_UID "
-                        f"({source_dataset_uid}) in push_config"
-                    )
                 else:
                     raise ValueError(f"Source dataset {source_dataset_uid} not found")
             else:
                 raise ValueError("No SOURCE_DATASET_UID found in push_config")
         except Exception as e:
-            current_run.log_warning(
-                f"Could not get org units from SOURCE_DATASET_UID: {e}. "
-                f"Falling back to extracted data (never retrieving full pyramid)."
-            )
+            logging.warning(f"Could not get org units from SOURCE_DATASET_UID: {e}. Falling back to extracted data.")
             # Fallback: get from extracted data (NEVER retrieve full pyramid)
-            # This ensures we never retrieve the full pyramid, only use what we already extracted
             try:
                 # Read all parquet files to get all org units
                 all_period_files = list(extracts_folder.glob("data_*.parquet"))
@@ -547,77 +552,55 @@ def compute_exhaustivity_and_queue(
                         dfs_all.append(df_file)
                     all_data = pl.concat(dfs_all, how="vertical_relaxed")
                     expected_org_units = all_data["ORG_UNIT"].unique().to_list()
-                    current_run.log_info(
-                        f"Using {len(expected_org_units)} ORG_UNITs from extracted data "
-                        f"(last resort fallback)"
-                    )
                 else:
                     expected_org_units = None
             except Exception as e3:
-                current_run.log_warning(f"Could not determine expected org units: {e3}")
+                logging.warning(f"Could not determine expected org units: {e3}")
                 expected_org_units = None
-    
-    # Compute exhaustivity values for ALL periods at once
-    # IMPORTANT: Ne pas utiliser expected_org_units pour créer une grille complète
-    # On veut seulement les combinaisons qui existent réellement dans les parquet
-    # Passer expected_org_units=None pour que compute_exhaustivity utilise seulement les org units des données
-    current_run.log_info(
-        f"Computing exhaustivity for {len(exhaustivity_periods)} periods: {exhaustivity_periods}. "
-        f"Using only org units present in extracted data (no complete grid with all dataset org units)."
-    )
     exhaustivity_df = compute_exhaustivity(
         pipeline_path=pipeline_path,
         extract_id=extract_id,
-        periods=exhaustivity_periods,  # Pass all periods
+        periods=exhaustivity_periods,
         expected_dx_uids=expected_dx_uids,
-        expected_org_units=None,  # IMPORTANT: None = utiliser seulement les org units présentes dans les données
+        expected_org_units=expected_org_units,  # Pass all org units from dataset for zero-filling
         extract_config_item=extract_config_item,
         extracts_folder=extracts_folder,
     )
 
     # Save exhaustivity data per period
-    current_run.log_info(f"Exhaustivity computation completed: {len(exhaustivity_df)} total combinations across all periods")
-    
     # Get all periods from the result (may include periods not in exhaustivity_periods if data exists)
     if len(exhaustivity_df) > 0 and "PERIOD" in exhaustivity_df.columns:
         periods_in_result = sorted(exhaustivity_df["PERIOD"].unique().to_list())
     else:
         periods_in_result = []
-    current_run.log_info(f"Periods in exhaustivity result: {periods_in_result}")
-    current_run.log_info(f"Periods requested: {exhaustivity_periods}")
     
     # Use periods from result if available, otherwise use requested periods
     # Also include all requested periods to ensure we create files even if they have no data (exhaustivity=0)
     periods_to_save = sorted(set(periods_in_result + exhaustivity_periods))
-    current_run.log_info(f"Periods to save: {periods_to_save}")
 
-    # Pre-load org units from extracted files to allow zero-filling for empty periods
-    all_org_units_for_extract: list[str] = []
+    # Use expected_org_units (from dataset) for zero-filling, fallback to extracted data
+    all_org_units_for_extract: list[str] = expected_org_units if expected_org_units else []
     org_units_by_period: dict[str, list[str]] = {}
-    try:
-        # Read ORG_UNIT column from all extract files (across all periods)
-        extract_files = list(extracts_folder.glob("data_*.parquet"))
-        if extract_files:
+    
+    if not expected_org_units:
+        # Fallback: load org units from extracted files
+        try:
             dfs_ous = []
-            for ef in extract_files:
-                try:
-                    # Extract period from filename (e.g., data_202510.parquet -> 202510)
-                    period_from_file = ef.stem.replace("data_", "")
-                    df_file = pl.read_parquet(ef, columns=["ORG_UNIT"])
-                    dfs_ous.append(df_file)
-                    # Track org units per period
-                    org_units_by_period[period_from_file] = df_file["ORG_UNIT"].unique().to_list()
-                except Exception:
-                    continue
+            for period in exhaustivity_periods:
+                extract_file = extracts_folder / f"data_{period}.parquet"
+                if extract_file.exists():
+                    try:
+                        df_file = pl.read_parquet(extract_file, columns=["ORG_UNIT"])
+                        dfs_ous.append(df_file)
+                        org_units_by_period[period] = df_file["ORG_UNIT"].unique().to_list()
+                    except Exception:
+                        continue
             if dfs_ous:
                 ou_df = pl.concat(dfs_ous, how="vertical_relaxed")
                 all_org_units_for_extract = ou_df["ORG_UNIT"].unique().to_list()
-                # Log org units count per period
-                for period, ous in org_units_by_period.items():
-                    current_run.log_info(f"Period {period}: {len(ous)} unique ORG_UNITs in extracted data")
-                current_run.log_info(f"Total unique ORG_UNITs across all periods: {len(all_org_units_for_extract)}")
-    except Exception as e:
-        current_run.log_warning(f"Could not pre-load org units for zero-filling: {e}")
+                current_run.log_info(f"Fallback: using {len(all_org_units_for_extract)} ORG_UNITs from extracted data")
+        except Exception as e:
+            current_run.log_warning(f"Could not pre-load org units for zero-filling: {e}")
     
     for period in periods_to_save:
         # Filter for the current period
@@ -649,25 +632,29 @@ def compute_exhaustivity_and_queue(
             .drop("CATEGORY_OPTION_COMBO", strict=False)
         )
         
-        # Calculate statistics for detailed logging
+        # Add missing org units with exhaustivity=0 (org units from dataset that have no data)
+        if all_org_units_for_extract:
+            existing_org_units = set(period_exhaustivity_org_level["ORG_UNIT"].to_list())
+            missing_org_units = [ou for ou in all_org_units_for_extract if ou not in existing_org_units]
+            
+            if missing_org_units:
+                missing_df = pl.DataFrame({
+                    "PERIOD": [period] * len(missing_org_units),
+                    "ORG_UNIT": missing_org_units,
+                    "EXHAUSTIVITY_VALUE": [0] * len(missing_org_units),
+                })
+                period_exhaustivity_org_level = pl.concat(
+                    [period_exhaustivity_org_level, missing_df], 
+                    how="vertical_relaxed"
+                )
+                current_run.log_info(
+                    f"Period {period}: added {len(missing_org_units)} missing ORG_UNITs with EXHAUSTIVITY_VALUE=0"
+                )
+        
+        # Calculate statistics for logging
         num_org_units = len(period_exhaustivity_org_level)
         num_values_1 = int(period_exhaustivity_org_level["EXHAUSTIVITY_VALUE"].sum())
         percentage_1 = (num_values_1 / num_org_units * 100) if num_org_units > 0 else 0.0
-        
-        # Get number of unique DX_UIDs from extracted data for this period
-        num_dx_uids = 0
-        try:
-            extract_file = extracts_folder / f"data_{period}.parquet"
-            if extract_file.exists():
-                extract_df = pl.read_parquet(extract_file, columns=["DX_UID"])
-                num_dx_uids = len(extract_df["DX_UID"].unique())
-        except Exception as e:
-            current_run.log_warning(f"Could not count DX_UIDs for period {period}: {e}")
-        
-        # Detailed log for this period (only percentage)
-        current_run.log_info(
-            f"📊 Period {period}: {num_org_units} ORG_UNITs, {num_dx_uids} DX_UIDs, {percentage_1:.1f}% exhaustivity (values = 1)"
-        )
 
         try:
             # Write aggregated file in the main processed folder (replaces old COC-level files)
@@ -679,14 +666,14 @@ def compute_exhaustivity_and_queue(
             
             # Enqueue aggregated file for pushing
             push_queue.enqueue(f"{extract_id}|{aggregated_file}")
+            
+            # Clean log with only essential info
             current_run.log_info(
-                f"✅ Saved and enqueued aggregated exhaustivity for {extract_id} - period {period}: "
-                f"{len(period_exhaustivity_org_level)} combis org -> {aggregated_file.name}"
+                f"📊 Period {period}: {num_org_units} ORG_UNITs, {percentage_1:.1f}% exhaustivity"
             )
         except Exception as e:
             current_run.log_error(f"❌ Error saving exhaustivity data for {extract_id} - period {period}: {e!s}")
             logging.error(f"Exhaustivity saving error: {e!s}")
-            import traceback
             traceback_str = traceback.format_exc()
             logging.error(f"Full traceback:\n{traceback_str}")
             raise
@@ -730,8 +717,6 @@ def format_for_exhaustivity_import(
         DATA_TYPE, DX_UID, PERIOD, ORG_UNIT, CATEGORY_OPTION_COMBO, VALUE, etc.
         Creates one entry per DX_UID expected for each COC.
     """
-    from utils import load_configuration
-    
     # Check required columns
     required_cols = ["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"]
     missing_cols = [col for col in required_cols if col not in exhaustivity_df.columns]
@@ -1105,27 +1090,23 @@ def push_dataset_org_units(
         return {"error": error_msg, "status_code": 404}
     
     source_ous = source_dataset["organisation_units"].explode().to_list()
+    source_ous_set = set(source_ous)
     
     # Filter by org unit level if specified
     if org_unit_level is not None:
         current_run.log_info(f"Filtering org units by level {org_unit_level}...")
-        # Get all org units with their levels from DHIS2
+        # Get all org units at the specified level using the same approach as dhis2_dataset_sync
         try:
-            org_units_response = dhis2_client.api.get(
-                "organisationUnits",
-                params={
-                    "fields": "id,level",
-                    "filter": f"id:in:[{','.join(source_ous)}]",
-                    "paging": "false"
-                }
-            )
-            org_units_data = org_units_response.get("organisationUnits", [])
+            org_units_at_level = retrieve_ou_list(dhis2_client, org_unit_level)
+            org_units_at_level_ids = set(org_units_at_level)
             
-            # Filter to keep only org units at the specified level
-            filtered_ous = [ou["id"] for ou in org_units_data if ou.get("level") == org_unit_level]
+            # Intersect with source dataset org units to keep only those at the specified level
+            # that are also in the source dataset
+            filtered_ous = list(source_ous_set.intersection(org_units_at_level_ids))
             
             current_run.log_info(
-                f"Filtered {len(source_ous)} org units -> {len(filtered_ous)} org units at level {org_unit_level}"
+                f"Found {len(org_units_at_level_ids)} org units at level {org_unit_level} in DHIS2, "
+                f"{len(source_ous)} in source dataset -> {len(filtered_ous)} matching"
             )
             source_ous = filtered_ous
         except Exception as e:
@@ -1301,14 +1282,12 @@ def push_data(
                 extract_files_collected[extract_id] = []
             extract_files_collected[extract_id].append(extract_path)
             push_queue.dequeue()  # Remove from queue since we've collected it
-            current_run.log_info(f"📦 Collected file for extract {extract_id}: {extract_path.name} (total: {len(extract_files_collected[extract_id])} file(s))")
             continue  # Continue to next queue item (wait for EXTRACT_COMPLETE marker)
 
         except Exception as e:
             error_msg = f"❌ Error processing queue item {next_item}: {e!s}"
             current_run.log_error(error_msg)
             logging.error(error_msg)
-            import traceback
             traceback_str = traceback.format_exc()
             logging.error(f"Full traceback:\n{traceback_str}")
             push_queue.dequeue()  # remove problematic item
@@ -1349,8 +1328,6 @@ def process_extract_files(
     dhis2_client : DHIS2Client
         DHIS2 client instance.
     """
-    from utils import load_configuration
-    
     # Get extract config item
     extracts_list = extract_config_full.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
     extract_config_item = next(
@@ -1374,8 +1351,6 @@ def process_extract_files(
     
     if not target_data_element_uid:
         current_run.log_warning(f"⚠️  No TARGET_DATA_ELEMENT_UID found in push_config for {extract_id}")
-    else:
-        current_run.log_info(f"🎯 Using TARGET_DATA_ELEMENT_UID: {target_data_element_uid} for {extract_id}")
     
     # Process all files and collect DataFrames
     all_dataframes = []
@@ -1420,15 +1395,13 @@ def process_extract_files(
                     "DX_UID", "PERIOD", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "ATTRIBUTE_OPTION_COMBO", "VALUE"
                 ])
                 
-                # Calculate statistics for detailed logging
+                # Calculate statistics for logging
                 num_org_units_push = len(df_mapped)
                 num_values_1_push = int(df_mapped.filter(pl.col("VALUE") == "1").height)
                 percentage_1_push = (num_values_1_push / num_org_units_push * 100) if num_org_units_push > 0 else 0.0
-                num_dx_uids_push = len(df_mapped["DX_UID"].unique()) if "DX_UID" in df_mapped.columns else 1
                 
                 current_run.log_info(
-                    f"   ✓ Formatted org-level aggregated: {short_path} -> {num_org_units_push} rows, DX_UID={target_data_element_uid}, "
-                    f"period {period if period else 'unknown'}: {num_org_units_push} ORG_UNITs, {num_dx_uids_push} DX_UIDs, {percentage_1_push:.1f}% exhaustivity"
+                    f"   ✓ Period {period}: {num_org_units_push} ORG_UNITs, {percentage_1_push:.1f}% exhaustivity"
                 )
             else:
                 # Legacy format with CATEGORY_OPTION_COMBO - use old logic
@@ -1468,23 +1441,13 @@ def process_extract_files(
                 if file_already_formatted:
                     df_mapped = df_final
                     if "DX_UID" in df_mapped.columns and df_mapped["DX_UID"].dtype == pl.List:
-                        current_run.log_warning(f"⚠️  DX_UID is a List in {short_path}, exploding to create one row per DX_UID")
-                        rows_before = len(df_mapped)
                         df_mapped = df_mapped.explode("DX_UID")
                         df_mapped = df_mapped.with_columns([
                             pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID")
                         ])
-                        rows_after = len(df_mapped)
-                        current_run.log_info(f"   Exploded: {rows_before} -> {rows_after} rows")
                 else:
                     cfg_list, mapper_func = dispatch_map["DATA_ELEMENT"]
                     extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
-
-                    if not extract_config:
-                        current_run.log_warning(f"Extract config not found in push_config for {extract_id}, pushing without mappings")
-                    else:
-                        target_dataset = extract_config.get("TARGET_DATASET_UID", "unknown")
-                        current_run.log_info(f"   Using mappings for {extract_id} -> TARGET_DATASET_UID: {target_dataset}")
                     
                     df_mapped = mapper_func(df=df_final, extract_config=extract_config)
             
@@ -1495,13 +1458,11 @@ def process_extract_files(
             
             # Add to list for concatenation
             all_dataframes.append(df_mapped)
-            current_run.log_info(f"   ✓ Processed {short_path}: {len(df_mapped)} rows")
 
         except Exception as e:
             error_msg = f"Fatal error for extract {extract_id} ({extract_path.name}): {e!s}"
             current_run.log_error(f"Fatal error for extract {extract_id} ({extract_path.name}), continuing with next file.")
             logging.error(error_msg)
-            import traceback
             traceback_str = traceback.format_exc()
             logging.error(f"Full traceback:\n{traceback_str}")
             continue
@@ -1577,7 +1538,6 @@ def process_extract_files(
                 error_msg = f"❌ Error during push_data call for {extract_id}: {push_error!s}"
                 current_run.log_error(error_msg)
                 logging.error(error_msg)
-                import traceback
                 traceback_str = traceback.format_exc()
                 logging.error(f"Full traceback:\n{traceback_str}")
                 raise  # Re-raise to be caught by outer try/except
@@ -1585,7 +1545,6 @@ def process_extract_files(
             error_msg = f"❌ Error pushing data for {extract_id}: {e!s}"
             current_run.log_error(error_msg)
             logging.error(error_msg)
-            import traceback
             traceback_str = traceback.format_exc()
             logging.error(f"Full traceback:\n{traceback_str}")
     else:
@@ -1614,35 +1573,28 @@ def split_on_pipe(s: str) -> tuple[str, str | None]:
     return None, parts[0]
 
 
-def apply_analytics_data_element_extract_config(df, extract_config: dict):
+def apply_analytics_data_element_extract_config(df: pl.DataFrame, extract_config: dict) -> pl.DataFrame:
     """Applies data element mappings to the extracted data.
 
     It also filters data elements based on category option combo (COC) if specified in the extract configuration.
 
     Parameters
     ----------
-    df : pd.DataFrame or pl.DataFrame
-        DataFrame containing the extracted data (pandas or polars).
+    df : pl.DataFrame
+        DataFrame containing the extracted data.
     extract_config : dict
         This is a dictionary containing the extract mappings.
 
     Returns
     -------
     pl.DataFrame
-        DataFrame with mapped data elements (always returns polars).
+        DataFrame with mapped data elements.
     """
-    # Handle empty DataFrame - support both pandas and polars
-    if isinstance(df, pd.DataFrame):
-        if len(df) == 0:
-            current_run.log_warning("Empty DataFrame provided to apply_analytics_data_element_extract_config, returning empty DataFrame.")
-            return pl.DataFrame(schema={col: pl.Utf8 for col in df.columns})
-        # Convert pandas to polars for processing (like the working version)
-        df_pl = pl.from_pandas(df)
-    else:
-        if df.is_empty():
-            current_run.log_warning("Empty DataFrame provided to apply_analytics_data_element_extract_config, returning empty DataFrame.")
-            return df
-        df_pl = df
+    # Handle empty DataFrame
+    if df.is_empty():
+        current_run.log_warning("Empty DataFrame provided to apply_analytics_data_element_extract_config, returning empty DataFrame.")
+        return df
+    df_pl = df
     
     if len(extract_config) == 0:
         current_run.log_warning("No extract details provided, skipping data element mappings.")
