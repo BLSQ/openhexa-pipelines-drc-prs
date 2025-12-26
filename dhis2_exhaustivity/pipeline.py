@@ -681,7 +681,7 @@ def compute_exhaustivity_and_queue(
             push_queue.enqueue(f"{extract_id}|{aggregated_file}")
             current_run.log_info(
                 f"✅ Saved and enqueued aggregated exhaustivity for {extract_id} - period {period}: "
-                f"{len(period_exhaustivity_org_level)} combis org → {aggregated_file.name}"
+                f"{len(period_exhaustivity_org_level)} combis org -> {aggregated_file.name}"
             )
         except Exception as e:
             current_run.log_error(f"❌ Error saving exhaustivity data for {extract_id} - period {period}: {e!s}")
@@ -829,7 +829,7 @@ def format_for_exhaustivity_import(
         # 3) Build expected_dx_uids_by_coc from mappings (indexed by COC SOURCE, using DX_UID SOURCE)
         # Note: The processed data contains COC SOURCE values (from compute_exhaustivity),
         # so we need to index by COC SOURCE and use DX_UID SOURCE.
-        # The mappings will be applied later in process_extract_files to transform SOURCE → TARGET.
+        # The mappings will be applied later in process_extract_files to transform SOURCE -> TARGET.
         if extract_mappings:
             if extract_config_item and extract_config_item.get("UIDS"):
                 relevant_dx_uids_source = set(extract_config_item.get("UIDS", []))
@@ -886,7 +886,7 @@ def format_for_exhaustivity_import(
         # with the TARGET dataElement (not the source DX_UIDs which multiply entries).
         # The target dataElement is obtained from mappings after transformation.
         # For now, we keep 1 row per (PERIOD, COC, ORG_UNIT) and let the mapping 
-        # transform COC source → COC target and add the target dataElement.
+        # transform COC source -> COC target and add the target dataElement.
         
         # Get target dataElement UID from mappings
         # For exhaustivity, there should be ONE target dataElement per extract
@@ -933,7 +933,7 @@ def format_for_exhaustivity_import(
         ])
         
         current_run.log_info(
-            f"Formatted for import: {len(exhaustivity_df)} combinations → {len(df_with_dx_uid)} entries "
+            f"Formatted for import: {len(exhaustivity_df)} combinations -> {len(df_with_dx_uid)} entries "
             f"(1 data point per PERIOD/COC/ORG_UNIT with target dataElement: {target_data_element})"
         )
     
@@ -969,6 +969,10 @@ def update_dataset_org_units(
 ) -> bool:
     """Updates the organisation units of datasets in the PRS DHIS2 instance.
 
+    Syncs org units from source datasets to target datasets, filtered by level:
+    - Fosa extracts (level 5): only sync org units at level 5
+    - BCZ extracts (level 3): only sync org units at level 3
+
     NOTE: This is PRS specific.
 
     Returns
@@ -981,14 +985,23 @@ def update_dataset_org_units(
         return True
 
     try:
-        current_run.log_info("Starting update of dataset organisation units.")
+        current_run.log_info("Starting update of dataset organisation units (filtered by level).")
 
         # Copy org units from source datasets to target datasets (both in the same DHIS2 instance)
-        # Read all dataset mappings from push_config.json
+        # Read all dataset mappings from push_config.json and extract_config.json
         configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
         config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+        extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
         prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
         dhis2_client = connect_to_dhis2(connection_str=prs_conn, cache_dir=None)
+
+        # Build a mapping of extract_id -> org_unit_level from extract_config
+        extract_levels = {}
+        for extract in extract_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", []):
+            extract_id = extract.get("EXTRACT_UID")
+            org_unit_level = extract.get("ORG_UNITS_LEVEL")
+            if extract_id and org_unit_level:
+                extract_levels[extract_id] = org_unit_level
 
         # Collect all dataset mappings from extracts that have TARGET_DATASET_UID
         # This includes both regular extracts and exhaustivity extracts
@@ -998,13 +1011,17 @@ def update_dataset_org_units(
             target_ds = extract.get("TARGET_DATASET_UID")
             extract_id = extract.get("EXTRACT_UID", "unknown")
             
+            # Get org unit level from extract_config (Fosa=5, BCZ=3)
+            org_unit_level = extract_levels.get(extract_id)
+            
             # For all extracts (regular and exhaustivity), we need both SOURCE_DATASET_UID and TARGET_DATASET_UID
             # to sync org units from source dataset to target dataset (both in the same DHIS2 instance)
             if target_ds and source_ds:
                 dataset_mappings.append({
                     "source": source_ds,
                     "target": target_ds,
-                    "extract_id": extract_id
+                    "extract_id": extract_id,
+                    "org_unit_level": org_unit_level
                 })
 
         if not dataset_mappings:
@@ -1015,17 +1032,20 @@ def update_dataset_org_units(
         
         # Sync each dataset mapping
         # Copy org units from source dataset to target dataset (both in the same DHIS2 instance)
+        # Filter by org unit level if specified
         for mapping in dataset_mappings:
+            level_msg = f" (level {mapping['org_unit_level']})" if mapping.get('org_unit_level') else ""
             current_run.log_info(
-                f"Syncing org units for '{mapping['extract_id']}': "
+                f"Syncing org units for '{mapping['extract_id']}'{level_msg}: "
                 f"{mapping['source']} -> {mapping['target']}"
             )
             sync_result = push_dataset_org_units(
                 dhis2_client=dhis2_client,
                 source_dataset_id=mapping["source"],
                 target_dataset_id=mapping["target"],
-            dry_run=config["SETTINGS"].get("DRY_RUN", True),
-        )
+                dry_run=config["SETTINGS"].get("DRY_RUN", True),
+                org_unit_level=mapping.get("org_unit_level"),
+            )
             
             # Check if sync failed
             if sync_result and "error" in sync_result:
@@ -1044,7 +1064,8 @@ def update_dataset_org_units(
 
 
 def push_dataset_org_units(
-    dhis2_client: DHIS2, source_dataset_id: str, target_dataset_id: str, dry_run: bool = True
+    dhis2_client: DHIS2, source_dataset_id: str, target_dataset_id: str, 
+    dry_run: bool = True, org_unit_level: int = None
 ) -> dict:
     """Updates the organisation units of a DHIS2 dataset.
 
@@ -1058,6 +1079,8 @@ def push_dataset_org_units(
         The ID of the dataset to be updated.
     dry_run : bool, optional
         If True, performs a dry run without making changes (default is True).
+    org_unit_level : int, optional
+        If provided, only sync org units at this level. If None, sync all org units.
 
     Returns
     -------
@@ -1082,12 +1105,41 @@ def push_dataset_org_units(
         return {"error": error_msg, "status_code": 404}
     
     source_ous = source_dataset["organisation_units"].explode().to_list()
+    
+    # Filter by org unit level if specified
+    if org_unit_level is not None:
+        current_run.log_info(f"Filtering org units by level {org_unit_level}...")
+        # Get all org units with their levels from DHIS2
+        try:
+            org_units_response = dhis2_client.api.get(
+                "organisationUnits",
+                params={
+                    "fields": "id,level",
+                    "filter": f"id:in:[{','.join(source_ous)}]",
+                    "paging": "false"
+                }
+            )
+            org_units_data = org_units_response.get("organisationUnits", [])
+            
+            # Filter to keep only org units at the specified level
+            filtered_ous = [ou["id"] for ou in org_units_data if ou.get("level") == org_unit_level]
+            
+            current_run.log_info(
+                f"Filtered {len(source_ous)} org units -> {len(filtered_ous)} org units at level {org_unit_level}"
+            )
+            source_ous = filtered_ous
+        except Exception as e:
+            current_run.log_warning(
+                f"Could not filter org units by level {org_unit_level}: {e}. Using all org units."
+            )
+    
     target_ous = target_dataset["organisation_units"].explode().to_list()
 
-    # here first check if the list of ids is different
+    # Check if the list of ids is different
     new_org_units = set(source_ous) - set(target_ous)
     if len(new_org_units) == 0:
-        current_run.log_info("Source and target dataset organisation units are in sync, no update needed.")
+        level_msg = f" at level {org_unit_level}" if org_unit_level else ""
+        current_run.log_info(f"Source and target dataset organisation units{level_msg} are in sync, no update needed.")
         return {"status": "skipped", "message": "No update needed, org units are identical."}
 
     current_run.log_info(
@@ -1101,8 +1153,19 @@ def push_dataset_org_units(
     if "error" in dataset_payload:
         return dataset_payload
 
-    # Step 2: Update organisationUnits (just push the source OUs)
-    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in source_ous]
+    # Step 2: Update organisationUnits
+    # If filtering by level, merge with existing target org units (don't replace all)
+    if org_unit_level is not None:
+        # Get existing target org units and add the filtered source org units
+        existing_target_ous = set(target_ous)
+        merged_ous = existing_target_ous.union(set(source_ous))
+        dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in merged_ous]
+        current_run.log_info(
+            f"Merging org units: {len(existing_target_ous)} existing + {len(new_org_units)} new = {len(merged_ous)} total"
+        )
+    else:
+        # Replace all org units with source org units
+        dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in source_ous]
 
     # Step 3: PUT updated dataset
     update_response = dhis2_request(
@@ -1113,7 +1176,8 @@ def push_dataset_org_units(
         current_run.log_info(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
         logging.error(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
     else:
-        msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: {len(source_ous)}"
+        level_msg = f" (level {org_unit_level})" if org_unit_level else ""
+        msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated{level_msg}: {len(source_ous)}"
         current_run.log_info(msg)
         logging.info(msg)
 
@@ -1363,7 +1427,7 @@ def process_extract_files(
                 num_dx_uids_push = len(df_mapped["DX_UID"].unique()) if "DX_UID" in df_mapped.columns else 1
                 
                 current_run.log_info(
-                    f"   ✓ Formatted org-level aggregated: {short_path} → {num_org_units_push} rows, DX_UID={target_data_element_uid}, "
+                    f"   ✓ Formatted org-level aggregated: {short_path} -> {num_org_units_push} rows, DX_UID={target_data_element_uid}, "
                     f"period {period if period else 'unknown'}: {num_org_units_push} ORG_UNITs, {num_dx_uids_push} DX_UIDs, {percentage_1_push:.1f}% exhaustivity"
                 )
             else:
@@ -1411,7 +1475,7 @@ def process_extract_files(
                             pl.col("DX_UID").cast(pl.Utf8).alias("DX_UID")
                         ])
                         rows_after = len(df_mapped)
-                        current_run.log_info(f"   Exploded: {rows_before} → {rows_after} rows")
+                        current_run.log_info(f"   Exploded: {rows_before} -> {rows_after} rows")
                 else:
                     cfg_list, mapper_func = dispatch_map["DATA_ELEMENT"]
                     extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
@@ -1420,7 +1484,7 @@ def process_extract_files(
                         current_run.log_warning(f"Extract config not found in push_config for {extract_id}, pushing without mappings")
                     else:
                         target_dataset = extract_config.get("TARGET_DATASET_UID", "unknown")
-                        current_run.log_info(f"   Using mappings for {extract_id} → TARGET_DATASET_UID: {target_dataset}")
+                        current_run.log_info(f"   Using mappings for {extract_id} -> TARGET_DATASET_UID: {target_dataset}")
                     
                     df_mapped = mapper_func(df=df_final, extract_config=extract_config)
             
@@ -1486,7 +1550,7 @@ def process_extract_files(
             if rows_filtered_out > 0:
                 current_run.log_warning(
                     f"⚠️  Filtered out {rows_filtered_out:,} invalid rows (missing required fields) "
-                    f"before push ({rows_before_filter:,} → {rows_after_filter:,})"
+                    f"before push ({rows_before_filter:,} -> {rows_after_filter:,})"
                 )
             
             # Calculate global statistics for all periods combined
@@ -1500,7 +1564,7 @@ def process_extract_files(
             current_run.log_info(
                 f"🚀 Pushing {rows_after_filter:,} valid rows for {extract_id} "
                 f"(from {len(all_dataframes)} file(s), periods: {periods_str}) "
-                f"→ TARGET_DATASET_UID: {target_dataset_uid}, "
+                f"-> TARGET_DATASET_UID: {target_dataset_uid}, "
                 f"Global: {num_org_units_global} ORG_UNITs, {num_dx_uids_global} DX_UIDs, {percentage_1_global:.1f}% exhaustivity"
             )
             try:
