@@ -43,3 +43,7 @@ Thumbs.db
 
 # Test data
 test_data_*/
+data/
+
+# Configuration test files
+configuration/*_test.json
