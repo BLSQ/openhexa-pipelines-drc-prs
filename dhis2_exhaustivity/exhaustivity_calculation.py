@@ -974,7 +974,7 @@ def compute_and_log_exhaustivity(
         from dateutil.relativedelta import relativedelta
         from openhexa.toolbox.dhis2.periods import period_from_string
         
-        extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
+        extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 3)
         if not extract_config["SETTINGS"].get("ENDDATE"):
             end = datetime.now().strftime("%Y%m")
         else:

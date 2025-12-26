@@ -147,7 +147,7 @@ def extract_data(
     configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
 
     # load configuration from root configuration folder
-    extract_config = load_configuration(config_path=Path(__file__).parent / "configuration" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
 
     # connect to source DHIS2 instance (No cache for data extraction)
     dhis2_client = connect_to_dhis2(
@@ -156,7 +156,7 @@ def extract_data(
 
     try:
         # Get extraction window (number of months to extract, including current month)
-        extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
+        extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 3)
         
         # ENDDATE: Always use current month (datetime.now()) - overrides config value
         # Config values are kept for reference/documentation but are overridden by dynamic logic
@@ -359,7 +359,10 @@ def compute_exhaustivity_data(
     current_run.log_info("Exhaustivity computation task started.")
     
     # Initialize queue early (before try block) so we can always enqueue FINISH
-    db_path = Path(__file__).parent / "configuration" / ".queue.db"
+    # Use data folder (writable on OpenHexa) instead of configuration folder
+    queue_dir = pipeline_path / "data"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    db_path = queue_dir / ".queue.db"
     push_queue = Queue(db_path)
     
     try:
@@ -370,10 +373,10 @@ def compute_exhaustivity_data(
 
     # Load extract config from root configuration (not workspace copy)
     from utils import load_configuration
-    extract_config = load_configuration(config_path=Path(__file__).parent / "configuration" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     
     # Get date range (same logic as extract_data)
-    extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 6)
+    extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 3)
     end = datetime.now().strftime("%Y%m")
     end_date = datetime.strptime(end, "%Y%m")
     start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
@@ -429,7 +432,7 @@ def compute_exhaustivity_and_queue(
     """
     # Load config to get org units level for folder naming
     from utils import load_configuration
-    extract_config = load_configuration(config_path=Path(__file__).parent / "configuration" / "extract_config.json")
+    extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     
     # Find the extract configuration to determine folder name
     extract_config_item = None
@@ -496,7 +499,7 @@ def compute_exhaustivity_and_queue(
         # Try to get from SOURCE_DATASET_UID in push_config (preferred method)
         try:
             from utils import load_configuration
-            push_config = load_configuration(config_path=Path(__file__).parent / "configuration" / "push_config.json")
+            push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
             push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
             source_dataset_uid = None
             for push_extract in push_extracts:
@@ -508,7 +511,7 @@ def compute_exhaustivity_and_queue(
                 # Get org units from source dataset (more limited than full pyramid)
                 from openhexa.toolbox.dhis2.dataframe import get_datasets
                 from utils import connect_to_dhis2
-                config = load_configuration(config_path=Path(__file__).parent / "configuration" / "push_config.json")
+                config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
                 dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
                 datasets = get_datasets(dhis2_client)
                 source_dataset = datasets.filter(pl.col("id").is_in([source_dataset_uid]))
@@ -590,6 +593,7 @@ def compute_exhaustivity_and_queue(
 
     # Pre-load org units from extracted files to allow zero-filling for empty periods
     all_org_units_for_extract: list[str] = []
+    org_units_by_period: dict[str, list[str]] = {}
     try:
         # Read ORG_UNIT column from all extract files (across all periods)
         extract_files = list(extracts_folder.glob("data_*.parquet"))
@@ -597,12 +601,21 @@ def compute_exhaustivity_and_queue(
             dfs_ous = []
             for ef in extract_files:
                 try:
-                    dfs_ous.append(pl.read_parquet(ef, columns=["ORG_UNIT"]))
+                    # Extract period from filename (e.g., data_202510.parquet -> 202510)
+                    period_from_file = ef.stem.replace("data_", "")
+                    df_file = pl.read_parquet(ef, columns=["ORG_UNIT"])
+                    dfs_ous.append(df_file)
+                    # Track org units per period
+                    org_units_by_period[period_from_file] = df_file["ORG_UNIT"].unique().to_list()
                 except Exception:
                     continue
             if dfs_ous:
                 ou_df = pl.concat(dfs_ous, how="vertical_relaxed")
                 all_org_units_for_extract = ou_df["ORG_UNIT"].unique().to_list()
+                # Log org units count per period
+                for period, ous in org_units_by_period.items():
+                    current_run.log_info(f"Period {period}: {len(ous)} unique ORG_UNITs in extracted data")
+                current_run.log_info(f"Total unique ORG_UNITs across all periods: {len(all_org_units_for_extract)}")
     except Exception as e:
         current_run.log_warning(f"Could not pre-load org units for zero-filling: {e}")
     
@@ -634,6 +647,26 @@ def compute_exhaustivity_and_queue(
             .agg([pl.col("EXHAUSTIVITY_VALUE").min().alias("EXHAUSTIVITY_VALUE")])
             .select([pl.col("PERIOD"), pl.col("ORG_UNIT"), pl.col("EXHAUSTIVITY_VALUE")])
             .drop("CATEGORY_OPTION_COMBO", strict=False)
+        )
+        
+        # Calculate statistics for detailed logging
+        num_org_units = len(period_exhaustivity_org_level)
+        num_values_1 = int(period_exhaustivity_org_level["EXHAUSTIVITY_VALUE"].sum())
+        percentage_1 = (num_values_1 / num_org_units * 100) if num_org_units > 0 else 0.0
+        
+        # Get number of unique DX_UIDs from extracted data for this period
+        num_dx_uids = 0
+        try:
+            extract_file = extracts_folder / f"data_{period}.parquet"
+            if extract_file.exists():
+                extract_df = pl.read_parquet(extract_file, columns=["DX_UID"])
+                num_dx_uids = len(extract_df["DX_UID"].unique())
+        except Exception as e:
+            current_run.log_warning(f"Could not count DX_UIDs for period {period}: {e}")
+        
+        # Detailed log for this period (only percentage)
+        current_run.log_info(
+            f"📊 Period {period}: {num_org_units} ORG_UNITs, {num_dx_uids} DX_UIDs, {percentage_1:.1f}% exhaustivity (values = 1)"
         )
 
         try:
@@ -740,7 +773,7 @@ def format_for_exhaustivity_import(
         # 1) Try to get mappings from push_config first
         if pipeline_path:
             try:
-                push_config = load_configuration(config_path=Path(__file__).parent / "configuration" / "push_config.json")
+                push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
                 push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
                 
                 # Try to find matching extract by EXTRACT_UID
@@ -863,7 +896,7 @@ def format_for_exhaustivity_import(
         matching_extract_for_target = None
         if pipeline_path:
             try:
-                push_config_check = load_configuration(config_path=Path(__file__).parent / "configuration" / "push_config.json")
+                push_config_check = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
                 push_extracts_check = push_config_check.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
                 matching_extract_for_target = next(
                     (e for e in push_extracts_check if e.get("EXTRACT_UID") == extract_id),
@@ -953,7 +986,7 @@ def update_dataset_org_units(
         # Copy org units from source datasets to target datasets (both in the same DHIS2 instance)
         # Read all dataset mappings from push_config.json
         configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
-        config = load_configuration(config_path=Path(__file__).parent / "configuration" / "push_config.json")
+        config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
         prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
         dhis2_client = connect_to_dhis2(connection_str=prs_conn, cache_dir=None)
 
@@ -1103,12 +1136,15 @@ def push_data(
     # setup
     configure_logging(logs_path=pipeline_path / "logs" / "push", task_name="push_data")
     # load configuration from root configuration folder
-    config = load_configuration(config_path=Path(__file__).parent / "configuration" / "push_config.json")
-    extract_config_full = load_configuration(config_path=Path(__file__).parent / "configuration" / "extract_config.json")
+    config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+    extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
 
     # Initialize queue (same pattern as dhis2_cmm_push)
-    db_path = Path(__file__).parent / "configuration" / ".queue.db"
+    # Use data folder (writable on OpenHexa) instead of configuration folder
+    queue_dir = pipeline_path / "data"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    db_path = queue_dir / ".queue.db"
     push_queue = Queue(db_path)
 
     # Push parameters
@@ -1267,7 +1303,7 @@ def process_extract_files(
     extracts_folder = pipeline_path / "data" / "extracts" / folder_name
     
     # Get TARGET_DATA_ELEMENT_UID from push_config for this extract
-    push_config = load_configuration(config_path=Path(__file__).parent / "configuration" / "push_config.json")
+    push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
     push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
     push_extract_config = next((e for e in push_extracts if e.get("EXTRACT_UID") == extract_id), {})
     target_data_element_uid = push_extract_config.get("TARGET_DATA_ELEMENT_UID")
@@ -1320,7 +1356,16 @@ def process_extract_files(
                     "DX_UID", "PERIOD", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "ATTRIBUTE_OPTION_COMBO", "VALUE"
                 ])
                 
-                current_run.log_info(f"   ✓ Formatted org-level aggregated: {short_path} → {len(df_mapped)} rows, DX_UID={target_data_element_uid}")
+                # Calculate statistics for detailed logging
+                num_org_units_push = len(df_mapped)
+                num_values_1_push = int(df_mapped.filter(pl.col("VALUE") == "1").height)
+                percentage_1_push = (num_values_1_push / num_org_units_push * 100) if num_org_units_push > 0 else 0.0
+                num_dx_uids_push = len(df_mapped["DX_UID"].unique()) if "DX_UID" in df_mapped.columns else 1
+                
+                current_run.log_info(
+                    f"   ✓ Formatted org-level aggregated: {short_path} → {num_org_units_push} rows, DX_UID={target_data_element_uid}, "
+                    f"period {period if period else 'unknown'}: {num_org_units_push} ORG_UNITs, {num_dx_uids_push} DX_UIDs, {percentage_1_push:.1f}% exhaustivity"
+                )
             else:
                 # Legacy format with CATEGORY_OPTION_COMBO - use old logic
                 # Read original data if available (for fallback)
@@ -1444,12 +1489,19 @@ def process_extract_files(
                     f"before push ({rows_before_filter:,} → {rows_after_filter:,})"
                 )
             
+            # Calculate global statistics for all periods combined
+            num_org_units_global = len(df_filtered["ORG_UNIT"].unique()) if not df_filtered.is_empty() else 0
+            num_dx_uids_global = len(df_filtered["DX_UID"].unique()) if not df_filtered.is_empty() else 0
+            num_values_1_global = int(df_filtered.filter(pl.col("VALUE") == "1").height) if not df_filtered.is_empty() else 0
+            percentage_1_global = (num_values_1_global / rows_after_filter * 100) if rows_after_filter > 0 else 0.0
+            
             # Push all data at once (DHIS2Pusher will automatically split into chunks of max_post)
             # IMPORTANT: Each extract pushes to its own TARGET_DATASET_UID via the mappings
             current_run.log_info(
                 f"🚀 Pushing {rows_after_filter:,} valid rows for {extract_id} "
                 f"(from {len(all_dataframes)} file(s), periods: {periods_str}) "
-                f"→ TARGET_DATASET_UID: {target_dataset_uid}"
+                f"→ TARGET_DATASET_UID: {target_dataset_uid}, "
+                f"Global: {num_org_units_global} ORG_UNITs, {num_dx_uids_global} DX_UIDs, {percentage_1_global:.1f}% exhaustivity"
             )
             try:
                 pusher.push_data(df_data=df_filtered)
