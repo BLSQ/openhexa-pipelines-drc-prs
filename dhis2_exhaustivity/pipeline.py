@@ -23,6 +23,7 @@ from utils import (
     retrieve_ou_list,
     save_to_parquet,
 )
+from config_sync import sync_configs_from_csv
 
 def dhis2_request(session, method: str, url: str, **kwargs):
     """Make a request to DHIS2 API and return JSON response."""
@@ -37,7 +38,7 @@ def dhis2_request(session, method: str, url: str, **kwargs):
     r.raise_for_status()
     return r.json()
 
-# Independent implementation: no dependency on dhis2_dataset_sync pipeline
+# Independent implementation for exhaustivity pipeline
 
 # Ticket(s) related to this pipeline:
 #   -https://bluesquare.atlassian.net/browse/SAN-123
@@ -91,6 +92,19 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_da
     """
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_exhaustivity"
 
+    # Sync configs with CSV files (medicaments_fosa.csv, medicaments_bcz.csv)
+    # This updates extract_config.json and push_config.json if medications changed
+    sync_configs_from_csv(pipeline_path)
+
+    # Reset queue at pipeline start to clear any old items from previous runs
+    # This MUST happen before any @task starts to avoid race conditions
+    queue_dir = pipeline_path / "data"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    db_path = queue_dir / ".queue.db"
+    push_queue = Queue(db_path)
+    push_queue.reset()
+    current_run.log_info("🧹 Queue reset at pipeline start")
+
     try:
         # 1) Extract data from source DHIS2
         extract_ready = extract_data(
@@ -98,34 +112,39 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_da
             run_task=run_extract_data,
         )
 
-        # 2) Sync dataset org units: copy org units from source dataset to target dataset
-        # (both in the same DHIS2 instance - no pyramid sync needed)
-        # This runs in parallel with extract since they don't depend on each other
-        if run_ou_sync:
-            sync_ready = update_dataset_org_units(
-                pipeline_path=pipeline_path,
-                run_task=True,
-            )
+        # 2) Sync dataset org units (runs in parallel with extract - no dependency)
+        # Returns dict with 'success' and 'new_org_units' (new org units per extract)
+        sync_result = update_dataset_org_units(
+            pipeline_path=pipeline_path,
+            run_task=run_ou_sync,
+        )
+        
+        # Extract new org units from sync result
+        # New org units will only be counted for current period onwards (not historical)
+        new_org_units = {}
+        if isinstance(sync_result, dict):
+            new_org_units = sync_result.get("new_org_units", {})
+            sync_ready = sync_result.get("success", True)
         else:
-            sync_ready = True
+            sync_ready = sync_result  # Fallback for boolean return
 
-        # 3) Compute exhaustivity from extracted data
-        # IMPORTANT: Must wait for extract_data to finish!
+        # 3) Compute exhaustivity from extracted data (must wait for extract!)
+        # Pass new_org_units so they're only counted for current period
         compute_ready = compute_exhaustivity_data(
             pipeline_path=pipeline_path,
             run_task=run_compute_data,
-            wait=extract_ready,  # Wait for extract to finish before computing
+            wait=extract_ready,
+            new_org_units=new_org_units,
         )
 
-        # 4) Apply mappings & push data to target DHIS2
-        # IMPORTANT: push_data must wait for both compute_exhaustivity_data AND update_dataset_org_units
+        # 4) Push data to target DHIS2 (must wait for both compute AND sync)
         push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
             wait=(compute_ready and sync_ready),
         )
 
-        # 4) Optional dataset statuses sync (after push) - not implemented yet
+        # 5) Optional dataset statuses sync (after push) - not implemented yet
         # if run_push_data and run_ds_sync:
         #     # Dataset statuses sync not implemented yet
         #     pass
@@ -361,6 +380,7 @@ def compute_exhaustivity_data(
     pipeline_path: Path,
     run_task: bool = True,
     wait: bool = True,
+    new_org_units: dict = None,
 ) -> bool:
     """Computes exhaustivity from extracted data and saves the result to processed/ folder.
     
@@ -372,10 +392,16 @@ def compute_exhaustivity_data(
         Whether to run the task or skip it.
     wait : bool
         Dependency flag - task waits for this to be True before running.
+    new_org_units : dict, optional
+        Dict mapping extract_id -> list of new org unit IDs.
+        New org units will only be included in exhaustivity for the current period onwards.
     """
     if not run_task:
         current_run.log_info("Exhaustivity computation task skipped.")
         return True
+    
+    if new_org_units is None:
+        new_org_units = {}
 
     current_run.log_info("Exhaustivity computation task started.")
     
@@ -401,23 +427,32 @@ def compute_exhaustivity_data(
     end_date = datetime.strptime(end, "%Y%m")
     start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
     
-    # Reset queue at the start of each run to clear any old entries from previous runs
-    # This ensures we don't process files from old runs with different naming conventions
-    push_queue.reset()
-    current_run.log_info("🧹 Queue reset at start of exhaustivity computation")
-    
+    # Note: Queue is reset at pipeline start (in main function) to avoid race conditions
     # Compute exhaustivity for all extracts
     exhaustivity_periods = get_periods(start, end)
+    current_period = end  # Current period = most recent (e.g., 202512)
+    
     current_run.log_info(f"Processing {len(extract_config['DATA_ELEMENTS'].get('EXTRACTS', []))} extracts for {len(exhaustivity_periods)} periods")
+    if new_org_units:
+        current_run.log_info(f"📍 New org units detected - will only count from period {current_period} onwards")
+    
     for target_extract in extract_config["DATA_ELEMENTS"].get("EXTRACTS", []):
         extract_id = target_extract.get("EXTRACT_UID")
         current_run.log_info(f"Computing exhaustivity for extract: {extract_id}")
+        
+        # Get new org units for this specific extract
+        extract_new_org_units = new_org_units.get(extract_id, [])
+        if extract_new_org_units:
+            current_run.log_info(f"📍 {len(extract_new_org_units)} new org units for '{extract_id}' - excluded from periods before {current_period}")
+        
         try:
             compute_exhaustivity_and_queue(
                 pipeline_path=pipeline_path,
                 extract_id=extract_id,
                 exhaustivity_periods=exhaustivity_periods,
                 push_queue=push_queue,
+                new_org_units=extract_new_org_units,
+                current_period=current_period,
             )
             current_run.log_info(f"✅ Completed exhaustivity computation for extract: {extract_id}")
         except Exception as e:
@@ -439,6 +474,8 @@ def compute_exhaustivity_and_queue(
     extract_id: str,
     exhaustivity_periods: list[str],
     push_queue: Queue,
+    new_org_units: list[str] = None,
+    current_period: str = None,
 ) -> None:
     """Computes exhaustivity from extracted data and saves the result to processed/ folder.
 
@@ -450,7 +487,15 @@ def compute_exhaustivity_and_queue(
         Identifier for the data extract.
     exhaustivity_periods : list[str]
         List of periods to process.
+    push_queue : Queue
+        Queue for pushing processed files.
+    new_org_units : list[str], optional
+        List of new org unit IDs that should only be counted from current_period onwards.
+    current_period : str, optional
+        The current period (e.g., '202512'). New org units are excluded from periods before this.
     """
+    if new_org_units is None:
+        new_org_units = []
     # Load config to get org units level for folder naming
     extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     
@@ -565,6 +610,8 @@ def compute_exhaustivity_and_queue(
         expected_org_units=expected_org_units,  # Pass all org units from dataset for zero-filling
         extract_config_item=extract_config_item,
         extracts_folder=extracts_folder,
+        new_org_units=new_org_units,  # New org units only counted from current_period
+        current_period=current_period,
     )
 
     # Save exhaustivity data per period
@@ -951,7 +998,7 @@ def format_for_exhaustivity_import(
 def update_dataset_org_units(
     pipeline_path: Path,
     run_task: bool = True,
-) -> bool:
+) -> dict:
     """Updates the organisation units of datasets in the PRS DHIS2 instance.
 
     Syncs org units from source datasets to target datasets, filtered by level:
@@ -962,12 +1009,13 @@ def update_dataset_org_units(
 
     Returns
     -------
-    bool
-        True if the update was performed, False if skipped.
+    dict
+        Dict with 'success': bool and 'new_org_units': dict mapping extract_id -> list of new org unit IDs.
+        New org units should only be counted for current period onwards (not historical).
     """
     if not run_task:
         current_run.log_info("Update dataset org units task skipped.")
-        return True
+        return {"success": True, "new_org_units": {}}
 
     try:
         current_run.log_info("Starting update of dataset organisation units (filtered by level).")
@@ -1011,9 +1059,12 @@ def update_dataset_org_units(
 
         if not dataset_mappings:
             current_run.log_warning("No dataset mappings found. Skipping dataset org units sync.")
-            return True
+            return {"success": True, "new_org_units": {}}
 
         current_run.log_info(f"Found {len(dataset_mappings)} dataset mapping(s) to sync.")
+        
+        # Collect new org units per extract
+        all_new_org_units = {}
         
         # Sync each dataset mapping
         # Copy org units from source dataset to target dataset (both in the same DHIS2 instance)
@@ -1039,13 +1090,23 @@ def update_dataset_org_units(
                 logging.error(error_msg)
                 # Continue with other mappings but log the error
                 continue
+            
+            # Collect new org units for this extract
+            new_ous = sync_result.get("new_org_units", [])
+            if new_ous:
+                all_new_org_units[mapping["extract_id"]] = new_ous
+                current_run.log_info(f"📍 Tracked {len(new_ous)} new org units for '{mapping['extract_id']}' (will only count from current period)")
 
     except Exception as e:
         current_run.log_error("An error occurred during dataset org units update. Process stopped.")
         logging.error(f"An error occurred during dataset org units update: {e}")
         raise
 
-    return True
+    if all_new_org_units:
+        total_new = sum(len(v) for v in all_new_org_units.values())
+        current_run.log_info(f"📍 Total new org units detected: {total_new} (across {len(all_new_org_units)} extract(s))")
+    
+    return {"success": True, "new_org_units": all_new_org_units}
 
 
 def push_dataset_org_units(
@@ -1095,7 +1156,7 @@ def push_dataset_org_units(
     # Filter by org unit level if specified
     if org_unit_level is not None:
         current_run.log_info(f"Filtering org units by level {org_unit_level}...")
-        # Get all org units at the specified level using the same approach as dhis2_dataset_sync
+        # Get all org units at the specified level from DHIS2
         try:
             org_units_at_level = retrieve_ou_list(dhis2_client, org_unit_level)
             org_units_at_level_ids = set(org_units_at_level)
@@ -1121,7 +1182,7 @@ def push_dataset_org_units(
     if len(new_org_units) == 0:
         level_msg = f" at level {org_unit_level}" if org_unit_level else ""
         current_run.log_info(f"Source and target dataset organisation units{level_msg} are in sync, no update needed.")
-        return {"status": "skipped", "message": "No update needed, org units are identical."}
+        return {"status": "skipped", "message": "No update needed, org units are identical.", "new_org_units": []}
 
     current_run.log_info(
         f"Found {len(new_org_units)} new org units to add to target dataset "
@@ -1156,11 +1217,14 @@ def push_dataset_org_units(
     if "error" in update_response:
         current_run.log_info(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
         logging.error(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
+        update_response["new_org_units"] = []
     else:
         level_msg = f" (level {org_unit_level})" if org_unit_level else ""
         msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated{level_msg}: {len(source_ous)}"
         current_run.log_info(msg)
         logging.info(msg)
+        # Include new org units in response for tracking
+        update_response["new_org_units"] = list(new_org_units)
 
     return update_response
 
@@ -1170,7 +1234,7 @@ def push_data(
     pipeline_path: Path,
     run_task: bool = True,
     wait: bool = True,
-):
+) -> bool:
     """Pushes data elements to the target DHIS2 instance."""
     if not run_task:
         current_run.log_info("Data push task skipped.")
@@ -1185,7 +1249,7 @@ def push_data(
     extract_config_full = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
     dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
 
-    # Initialize queue (same pattern as dhis2_cmm_push)
+    # Initialize queue for producer-consumer pattern
     # Use data folder (writable on OpenHexa) instead of configuration folder
     queue_dir = pipeline_path / "data"
     queue_dir.mkdir(parents=True, exist_ok=True)
@@ -1223,7 +1287,7 @@ def push_data(
     # Dictionary to collect files per extract (maintains current output behavior: concatenate before push)
     extract_files_collected: dict[str, list[Path]] = {}
 
-    # Loop over the queue (same pattern as dhis2_cmm_push)
+    # Loop over the queue (producer-consumer pattern)
     # This ensures we wait for files to be created and process them as they become available
     # We collect all files for an extract before concatenating and pushing (maintaining current output behavior)
     while True:
@@ -1238,7 +1302,7 @@ def push_data(
         if not next_item:
             current_run.log_info(f"Push data process: waiting for exhaustivity files to be computed... (queue empty, {queue_count} items)")
             # Queue SQLite handles synchronization between processes
-            # Check periodically (same pattern as dhis2_cmm_push)
+            # Check periodically for new items
             time.sleep(60 * int(push_wait))
             continue
         
@@ -1476,7 +1540,7 @@ def process_extract_files(
             # Concatenate all dataframes
             df_combined = pl.concat(all_dataframes, how="vertical_relaxed")
             
-            # Sort by ORG_UNIT for faster DHIS2 processing (same as dhis2_dataset_sync)
+            # Sort by ORG_UNIT for faster DHIS2 processing
             df_combined = df_combined.sort("ORG_UNIT")
             
             # Get TARGET_DATASET_UID for logging (from push_config)

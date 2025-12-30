@@ -59,6 +59,8 @@ def compute_exhaustivity(
     expected_org_units: list[str] = None,
     extract_config_item: dict = None,
     extracts_folder: Path = None,
+    new_org_units: list[str] = None,
+    current_period: str = None,
 ) -> pl.DataFrame:
     """Computes exhaustivity from extracted data based on VALUE null checks.
     
@@ -73,6 +75,7 @@ def compute_exhaustivity(
       - Si TOUS sont présents ET non-null → exhaustivity = 1
       - Si UN DX_UID mappé est manquant OU a une valeur null/vide → exhaustivity = 0
     - Si un COC n'est pas présent dans les données → exhaustivity = 0 (COC manquant)
+    - New org units are only included for current_period and onwards (not historical)
     
     Parameters
     ----------
@@ -88,6 +91,12 @@ def compute_exhaustivity(
     expected_org_units : list[str], optional
         List of expected ORG_UNITs for this extract. If provided, missing combinations
         will be marked as exhaustivity = 0.
+    new_org_units : list[str], optional
+        List of newly added org unit IDs. These will only be included in exhaustivity
+        for current_period and onwards, not for historical periods.
+    current_period : str, optional
+        The current period (e.g., '202512'). New org units are excluded from periods
+        before this one.
     
     Returns
     -------
@@ -97,6 +106,8 @@ def compute_exhaustivity(
         One row per (PERIOD, DX_UID, COC, ORG_UNIT) combination (matching CMM format).
         Missing combinations are included with value 0.
     """
+    # Initialize new_org_units as empty set if not provided
+    new_org_units_set = set(new_org_units) if new_org_units else set()
     # Use provided extracts_folder or determine it based on extract_id
     if extracts_folder is None:
         # Determine extracts folder based on extract_id (same logic as in pipeline.py)
@@ -638,13 +649,24 @@ def compute_exhaustivity(
         expected_df = None
         if create_complete_grid and expected_periods and expected_org_units_list and all_expected_cocs:
             # Build expected combinations: for each COC, get all its DX_UIDs
+            # NEW: Filter new org units - only include them for current_period and onwards
             grid_rows = []
+            excluded_new_org_unit_rows = 0
+            
             for coc in all_expected_cocs:
                 dx_uids_for_coc = expected_dx_uids_by_coc.get(coc, [])
                 if not dx_uids_for_coc:
                     continue
                 for period in expected_periods:
                     for org_unit in expected_org_units_list:
+                        # Check if this is a new org unit and if period is before current_period
+                        # New org units should only be counted from current_period onwards
+                        if org_unit in new_org_units_set and current_period:
+                            if period < current_period:
+                                # Skip this org unit for historical periods
+                                excluded_new_org_unit_rows += len(dx_uids_for_coc)
+                                continue
+                        
                         for dx_uid in dx_uids_for_coc:
                             grid_rows.append({
                                 "PERIOD": period,
@@ -660,6 +682,10 @@ def compute_exhaustivity(
                     f"Creating complete grid: {len(expected_periods)} periods × {len(all_expected_cocs)} COCs × "
                     f"{len(expected_org_units_list)} ORG_UNITs × avg {sum(len(expected_dx_uids_by_coc.get(coc, [])) for coc in all_expected_cocs) / max(len(all_expected_cocs), 1):.1f} DX_UIDs per COC = {total_expected} combinations"
                 )
+                if excluded_new_org_unit_rows > 0:
+                    safe_log_info(
+                        f"📍 Excluded {excluded_new_org_unit_rows} rows for {len(new_org_units_set)} new org units in historical periods (before {current_period})"
+                    )
             else:
                 logging.warning("No grid rows to create (expected_dx_uids_by_coc is empty or no COCs). Skipping complete grid.")
         
