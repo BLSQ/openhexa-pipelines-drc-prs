@@ -1,5 +1,6 @@
 import json
 import logging
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -124,29 +125,24 @@ class DatasetCompletionSync:
         except requests.RequestException as e:
             self.import_summary["errors"]["push_errors"] += 1
             self.logger.error(f"Push (PUT) request failed for ds:{dataset_id} ou:{org_unit} pe:{period} error: {e}")
-        except Exception as e:
-            self.import_summary["errors"]["push_errors"] += 1
-            self.logger.error(f"Push (PUT) request failed for ds:{dataset_id} ou:{org_unit} pe:{period} error: {e}")
+            raise
         finally:
             self._process_response(ds=dataset_id, pe=period, ou=org_unit, response=response)
 
     def _try_build_source_completion_table(
-        self, pyramid: pd.DataFrame, level: int, dataset_id: str, period: str
+        self, org_units: list[str], dataset_id: str, period: str
     ) -> None:
-        """Build a completion status table for all organisation units in the pyramid."""
-        if pyramid is None:
-            return
-
-        if level is None:
-            level = 2  # default to level 2
-
-        ous = pyramid[pyramid["level"] == level]["id"].unique().tolist()
-        if not ous:
-            return
-
-        current_run.log_info(f"Building source completion table for {len(ous)} OUs level {level} period {period}.")
+        """Build a completion status table for all organisation units provided.
+        Args:
+            org_units: List of organisation unit IDs to fetch completion status for (NOTE: use OU parents).
+            dataset_id: The dataset ID to fetch completion status for.
+            period: The period for which to fetch the completion status.        
+        """        
+        if not org_units:
+            return  
+              
         completion_statuses = []
-        for ou in ous:
+        for ou in org_units:
             completion = self._fetch_completion_status_from_source(
                 dataset_id=dataset_id, period=period, org_unit=ou, timeout=30
             )
@@ -173,30 +169,51 @@ class DatasetCompletionSync:
         self,
         source_dataset_id: str,
         target_dataset_id: str,
-        dhis2_pyramid: pd.DataFrame | None,
-        level: int | None,
+        org_units: list[str] | None,
+        parent_ou: list[str] | None,
         period: list[str],
-        org_units: list[str],
-        logging_interval: int = 2000,
+        logging_interval: int = 2000, 
+        ds_processed_path: Path | None = None,
     ) -> None:
         """Sync completion status between datasets.
 
         source_dataset_id: The dataset ID in the source DHIS2 instance.
         target_dataset_id: The dataset ID in the target DHIS2 instance.
-        dhis2_pyramid: DataFrame containing the DHIS2 organisation unit pyramid (optional).
-        level: The organisational unit level to consider in the pyramid (optional).
-        period: The period for which to sync the completion status.
-        org_units: List of organisation unit IDs to process.
-        logging_interval: Interval for logging progress (defaults to 2000).
-
+        org_units: List of organisation unit IDs to sync.
+        parent_ou: List of parent organisation unit IDs to build completion table (if None, no table built).
+        period: The period for which to sync the completion status.        
+        logging_interval: Interval for logging progress (defaults to 2000).        
+        ds_processed_path: Path to save processed org units (if None, no file saving nor comparison).
         """
         self._reset_import_summary()
+
+        if not org_units:
+            msg = f"No org units provided for period {period}. DS sync skipped."
+            self.logger.warning(msg)
+            current_run.log_warning(msg)
+            return
+
+        org_units_to_process = self._get_unprocessed_org_units(org_units, ds_processed_path, period)
+        if not org_units_to_process:
+            msg = f"All org units already processed for period {period}. DS sync skipped."
+            self.logger.info(msg)
+            current_run.log_info(msg)
+            return
+
+        msg = (
+            f"Starting dataset '{target_dataset_id}' completion process for period: "
+            f"{period} org units: {len(org_units_to_process)}."
+        )
+        current_run.log_info(msg)
+        self.logger.info(msg)
+
         self._try_build_source_completion_table(
-            pyramid=dhis2_pyramid, level=level, dataset_id=source_dataset_id, period=period
+            org_units=parent_ou, dataset_id=source_dataset_id, period=period
         )
 
         try:
-            for idx, ou in enumerate(org_units, start=1):
+            processed = []
+            for idx, ou in enumerate(org_units_to_process, start=1):
                 completion_status = self._get_source_completion_status_for_ou(
                     dataset_id=source_dataset_id,
                     period=period,
@@ -204,24 +221,94 @@ class DatasetCompletionSync:
                 )
 
                 if not completion_status:
+                    processed.append(ou)  # no status to update, mark as processed
                     continue
 
-                self._push_completion_status_to_target(
-                    dataset_id=target_dataset_id,
-                    period=period,
-                    org_unit=ou,
-                    date=completion_status.get("date"),
-                    completed=completion_status.get("completed"),
-                )
+                try:
+                    self._push_completion_status_to_target(
+                        dataset_id=target_dataset_id,
+                        period=period,
+                        org_unit=ou,
+                        date=completion_status.get("date"),
+                        completed=completion_status.get("completed"),
+                    )
+                    processed.append(ou)
+                except Exception as e:
+                    self.logger.error(f"Error pushing completion status for period {period}, org unit {ou}: {e}")
 
-                if idx % logging_interval == 0 or idx == len(org_units):
-                    current_run.log_info(f"{idx} / {len(org_units)} OUs processed")
-
+                if idx % logging_interval == 0 or idx == len(org_units_to_process):
+                    current_run.log_info(f"{idx} / {len(org_units_to_process)} OUs processed")
+                    self._update_processed_ds_sync_file(
+                        processed=processed,
+                        period=period,
+                        processed_path=ds_processed_path,
+                    )
         except Exception as e:
             self.logger.error(f"Error setting dataset completion for dataset {target_dataset_id}, period {period}: {e}")
         finally:
             self._log_summary(org_units=org_units, period=period)
 
+    def _get_unprocessed_org_units(self, org_units: list, processed_path: Path | None, period: str) -> list:
+        if processed_path is None:
+            return org_units
+        ds_processed_fname = processed_path / f"ds_ou_processed_{period}.parquet"
+        if not ds_processed_fname.exists():
+            return org_units
+
+        try:
+            processed_df = pd.read_parquet(ds_processed_fname)
+            if "ORG_UNIT" not in processed_df.columns:
+                raise KeyError("Missing ORG_UNIT column")
+
+            processed_set = set(processed_df["ORG_UNIT"].dropna().unique())
+            remaining = [ou for ou in org_units if ou not in processed_set]
+
+            msg = f"Loaded {len(processed_set)} processed org units, {len(remaining)} to process for period {period}."
+            self.logger.info(msg)
+            current_run.log_info(msg)
+            return remaining
+        except Exception as e:
+            msg = f"Error loading processed org units file: {ds_processed_fname}. Returning all org units to process."
+            self.logger.error(msg + f" Error: {e}")
+            current_run.log_info(msg)
+            return org_units
+
+    def _update_processed_ds_sync_file(
+        self,
+        processed: list,
+        period: str,
+        processed_path: Path | None,
+    ) -> None:
+        """Save the processed org units to a parquet file."""
+        if processed_path is None:
+            current_run.log_warning("No processed path provided, skipping saving processed org units.")
+            return
+
+        processed_path.mkdir(parents=True, exist_ok=True)
+        ds_processed_file = processed_path / f"ds_ou_processed_{period}.parquet"
+
+        msg = None
+        final_processed = processed
+
+        if ds_processed_file.exists():
+            existing_df = pd.read_parquet(ds_processed_file)
+            existing_org_units = set(existing_df["ORG_UNIT"].unique())
+            new_org_units = [ou for ou in processed if ou not in existing_org_units]
+            final_processed = list(existing_org_units) + new_org_units
+            msg = (
+                f"Found {len(existing_org_units)} processed OUs, "
+                f"updating file {ds_processed_file.name} with {len(new_org_units)} new OUs."
+            )
+
+        if final_processed:
+            df_processed = pd.DataFrame({"ORG_UNIT": final_processed})
+            df_processed.to_parquet(ds_processed_file, index=False)
+            msg = f"Saved {len(final_processed)} processed org units in {ds_processed_file.name}."
+
+        if msg:
+            current_run.log_info(msg)
+            self.logger.info(msg)
+ 
     def _log_summary(self, org_units: list, period: str) -> None:
         msg = (
             f"Dataset completion for period {period} summary: {self.import_summary['import_counts']} "

@@ -700,10 +700,9 @@ def sync_dataset_statuses(
     try:
         for extract_config in ds_extracts:
             ds_extract_dir = ds_sync_dir / extract_config.get("EXTRACT_UID")
-            files = list(ds_extract_dir.glob("ds_sync_*.parquet"))
+            files = sorted(list(ds_extract_dir.glob("ds_sync_*.parquet")))
 
             for file in files:
-                df_mapped = read_parquet_extract(file)
                 period = file.stem.replace("ds_sync_", "")
 
                 # Set dataset competion for all org units for this period
@@ -713,11 +712,11 @@ def sync_dataset_statuses(
                     target_ds_id=extract_config.get("TARGET_DATASET_UID"),
                     dhis2_pyramid=read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet"),
                     period=period,
-                    org_units=df_mapped["ORG_UNIT"].unique(),
+                    ds_sync_fname=file,
+                    ds_processed=ds_extract_dir / "processed",
+                    logger=logger,
                 )
 
-                # Delete the file after successful processing
-                file.unlink()
     except Exception as e:
         raise Exception(f"Error during dataset statuses sync: {e}") from e
     finally:
@@ -736,11 +735,13 @@ def prepare_dataset_sync_data(pipeline_path: Path, extract_config: dict, df_mapp
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
     # Ensure the column exists
-    if "ORG_UNITS" not in df_mapped.columns:
-        current_run.log_warning("Mapping table must contain an 'ORG_UNITS' column. ds_sync backup skipped.")
-    unique_org_units_df = df_mapped["ORG_UNITS"].drop_duplicates().reset_index(drop=True).to_frame(name="ORG_UNITS")
+    if "ORG_UNIT" not in df_mapped.columns:
+        current_run.log_warning("Mapping table must contain an 'ORG_UNIT' column. ds_sync backup skipped.")
+        return
+
+    unique_org_units_df = df_mapped["ORG_UNIT"].drop_duplicates().reset_index(drop=True).to_frame(name="ORG_UNIT")
     output_path = dataset_dir / f"ds_sync_{period}.parquet"
-    unique_org_units_df.to_parquet(output_path)
+    unique_org_units_df.to_parquet(output_path, index=False)
     current_run.log_info(f"Dataset sync org units saved: {output_path}")
 
 
@@ -1105,7 +1106,9 @@ def handle_dataset_completion(
     target_ds_id: str,
     dhis2_pyramid: pd.DataFrame,
     period: str,
-    org_units: list[str],
+    ds_sync_fname: Path,
+    ds_processed: Path,
+    logger: logging.Logger,
 ) -> None:
     """Sets datasets as complete for the pushed periods.
 
@@ -1115,19 +1118,32 @@ def handle_dataset_completion(
         return
     if not target_ds_id:
         return
+    if not ds_sync_fname:
+        current_run.log_warning("No dataset sync file provided for completion sync, skipping.")
+        return
 
-    current_run.log_info(
-        f"Starting dataset '{target_ds_id}' completion process for period: {period} org units: {len(org_units)}."
-    )
+    try:
+        df = pd.read_parquet(ds_sync_fname)
+        if "ORG_UNIT" not in df.columns:
+            raise KeyError(f"'ORG_UNIT' column not found in {ds_sync_fname}")
+        org_units_to_sync = df["ORG_UNIT"].unique().tolist()
+    except Exception as e:
+        msg = f"Error loading the dataset org units file to sync: {ds_sync_fname}. DS sync skipped."
+        logger.error(msg + f" Error: {e}")
+        current_run.log_info(msg)
+        return
+
+    province_uids = dhis2_pyramid[dhis2_pyramid["level"] == 2]["id"].to_list()
+    current_run.log_info(f"Building source completion table for {len(province_uids)} OUs level 2 period {period}.")
     try:
         syncer.sync(
             source_dataset_id=source_ds_id,
             target_dataset_id=target_ds_id,
-            dhis2_pyramid=dhis2_pyramid,
-            level=2,
+            org_units=org_units_to_sync,
+            parent_ou=province_uids,
             period=period,
-            org_units=org_units,
-            logging_interval=2000,
+            logging_interval=4000,            
+            ds_processed_path=ds_processed,
         )
     except Exception as e:
         current_run.log_error(f"Error setting completions for dataset {target_ds_id}, period {period} - Error: {e!s}.")
