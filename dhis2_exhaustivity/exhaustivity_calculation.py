@@ -7,7 +7,7 @@ import polars as pl
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2.periods import period_from_string
-from utils import load_configuration
+from utils import load_drug_mapping, load_pipeline_config, get_extract_config
 
 logger = logging.getLogger(__name__)
 
@@ -289,77 +289,31 @@ def compute_exhaustivity(
             # In this case, we need to use the raw data from df before mappings
             df_all_periods_raw = df
         
-        # Build expected DX_UIDs per COC from push_config.MAPPINGS (source of truth for pairs)
-        # The mappings in push_config define which DX_UIDs are associated with which COCs
+        # Build expected DX_UIDs per COC from drug_mapping files (source of truth for pairs)
+        # The drug_mapping files define which DX_UIDs are associated with which COCs
         expected_dx_uids_by_coc: dict[str, list[str]] = {}
         
-        # 1) Try to get mappings from push_config first (source of truth for pairs)
-        # Note: push_config may use different EXTRACT_UID names (e.g., "level_fosa", "level_zs")
-        # instead of the extract_id (e.g., "Fosa_exhaustivity_data_elements", "BCZ_exhaustivity_data_elements")
+        # Load mappings from drug_mapping files via pipeline_config
         extract_mappings = {}
         if pipeline_path:
             try:
-                push_config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
-                push_extracts = push_config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+                config_dir = pipeline_path / "configuration"
+                pipeline_config = load_pipeline_config(config_dir)
                 
-                # Try to find matching extract by EXTRACT_UID
-                # First try exact match, then try alternative names
-                matching_extract = None
-                
-                # Try exact match first
-                matching_extract = next(
-                    (e for e in push_extracts if e.get("EXTRACT_UID") == extract_id),
-                    None
-                )
-                
-                # If found but has empty mappings, or not found, try alternative names based on extract_id
-                if not matching_extract or not matching_extract.get("MAPPINGS"):
-                    if "Fosa" in extract_id or "fosa" in extract_id.lower():
-                        alt_extract = next(
-                            (e for e in push_extracts if e.get("EXTRACT_UID") == "level_fosa"),
-                            None
-                        )
-                        if alt_extract and alt_extract.get("MAPPINGS"):
-                            matching_extract = alt_extract
-                    elif "BCZ" in extract_id or "zs" in extract_id.lower():
-                        alt_extract = next(
-                            (e for e in push_extracts if e.get("EXTRACT_UID") == "level_zs"),
-                            None
-                        )
-                        if alt_extract and alt_extract.get("MAPPINGS"):
-                            matching_extract = alt_extract
+                # Find matching extract by EXTRACT_ID
+                matching_extract = get_extract_config(pipeline_config, extract_id)
                 
                 if matching_extract:
-                    push_mappings = matching_extract.get("MAPPINGS", {})
-                    if push_mappings:
-                        # Only include mappings for UIDs that are in extract_config.UIDS (if available)
-                        # Exception: if we found mappings via alternative name (level_fosa, level_zs),
-                        # use all mappings without filtering, as the UIDs may not match exactly
-                        found_via_alternative = matching_extract.get("EXTRACT_UID") in ["level_fosa", "level_zs"]
-                        
-                        if extract_config_item and extract_config_item.get("UIDS") and not found_via_alternative:
-                            extract_uids = set(extract_config_item.get("UIDS", []))
-                            for uid, mapping in push_mappings.items():
-                                # Include mapping if source UID OR target UID is in extract_config
-                                target_uid = mapping.get("UID", "")
-                                if uid in extract_uids or target_uid in extract_uids:
-                                    extract_mappings[uid] = mapping
-                        else:
-                            # Use all mappings (either no UIDS filter, or found via alternative name)
-                            extract_mappings.update(push_mappings)
+                    # Load mappings from DRUG_MAPPING_FILE
+                    drug_mapping_file = matching_extract.get("DRUG_MAPPING_FILE")
+                    if drug_mapping_file:
+                        extract_mappings, uids = load_drug_mapping(config_dir, drug_mapping_file)
                         if extract_mappings:
-                            via_info = f" (found via {matching_extract.get('EXTRACT_UID')})" if found_via_alternative else ""
-                            safe_log_info(f"Loaded {len(extract_mappings)} mappings from push_config for {extract_id}{via_info}")
+                            safe_log_info(f"Loaded {len(extract_mappings)} mappings from {drug_mapping_file} for {extract_id}")
                 else:
-                    safe_log_warning(f"Extract {extract_id} not found in push_config (tried exact match and alternatives: level_fosa, level_zs)")
+                    safe_log_warning(f"Extract {extract_id} not found in pipeline_config")
             except Exception as e:
-                safe_log_warning(f"Could not load mappings from push_config: {e!s}")
-        
-        # 2) If no mappings in push_config, try extract_config as fallback
-        if not extract_mappings and extract_config_item:
-            extract_mappings = extract_config_item.get("MAPPINGS", {})
-            if extract_mappings:
-                safe_log_info(f"Loaded {len(extract_mappings)} mappings from extract_config for {extract_id}")
+                safe_log_warning(f"Could not load mappings: {e!s}")
         
         # 3) Build expected_dx_uids_by_coc from mappings (indexed by COC SOURCE, using DX_UID SOURCE)
         # This defines which (COC SOURCE, DX_UID SOURCE) pairs are valid
@@ -440,14 +394,19 @@ def compute_exhaustivity(
             ])
         )
         
+        # OLD CODE (commented - was using expected_org_units to create complete grid):
         # Create a complete grid of all possible (PERIOD, COC, ORG_UNIT) combinations
         # This ensures that missing COCs are marked with exhaustivity = 0
+        # periods_in_data = df["PERIOD"].unique().to_list() if len(df) > 0 else []
+        # # Use expected_org_units if provided, otherwise derive from data (like previous push)
+        # if expected_org_units and len(expected_org_units) > 0:
+        #     org_units_in_data = expected_org_units
+        # else:
+        #     org_units_in_data = df["ORG_UNIT"].unique().to_list() if len(df) > 0 else []
+        
+        # NEW CODE: Only use org units present in the data (don't create grid for missing org units)
         periods_in_data = df["PERIOD"].unique().to_list() if len(df) > 0 else []
-        # Use expected_org_units if provided, otherwise derive from data (like previous push)
-        if expected_org_units and len(expected_org_units) > 0:
-            org_units_in_data = expected_org_units
-        else:
-            org_units_in_data = df["ORG_UNIT"].unique().to_list() if len(df) > 0 else []
+        org_units_in_data = df["ORG_UNIT"].unique().to_list() if len(df) > 0 else []
         cocs_in_mappings = list(expected_dx_uids_by_coc.keys()) if expected_dx_uids_by_coc else []
         
         # Build a set of (PERIOD, COC, ORG_UNIT) combinations present in data
@@ -739,84 +698,3 @@ def compute_exhaustivity(
         raise
     finally:
         current_run.log_info("Exhaustivity computation finished.")
-
-
-
-def compute_and_log_exhaustivity(
-    pipeline_path: Path,
-    run_task: bool = True,
-    extract_config: dict = None,
-) -> pl.DataFrame:
-    """Computes exhaustivity based on extracted data after extraction is complete.
-    
-    Parameters
-    ----------
-    pipeline_path : Path
-        The root path for the pipeline.
-    run_task : bool
-        Whether to run the computation.
-    extract_config : dict, optional
-        Configuration dictionary. If not provided, will be loaded from configuration file.
-    
-    Returns
-    -------
-    pl.DataFrame
-        DataFrame with columns: PERIOD, CATEGORY_OPTION_COMBO, ORG_UNIT, EXHAUSTIVITY_VALUE
-    """
-    if not run_task:
-        current_run.log_info("Exhaustivity calculation skipped.")
-        return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
-    
-    try:
-        # Load configuration if not provided
-        if extract_config is None:
-            extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
-        
-        # Get extract information
-        target_extract = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])
-        if not target_extract:
-            current_run.log_error("No extracts found in configuration for exhaustivity calculation.")
-            return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
-        
-        extract_id = target_extract[0].get("EXTRACT_UID")
-        if not extract_id:
-            current_run.log_error("No EXTRACT_UID found in configuration for exhaustivity calculation.")
-            return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
-        
-        # Get periods from configuration (using same logic as extraction)
-        extraction_window = extract_config["SETTINGS"].get("EXTRACTION_MONTHS_WINDOW", 3)
-        if not extract_config["SETTINGS"].get("ENDDATE"):
-            end = datetime.now().strftime("%Y%m")
-        else:
-            end = extract_config["SETTINGS"].get("ENDDATE")
-        if not extract_config["SETTINGS"].get("STARTDATE"):
-            end_date = datetime.strptime(end, "%Y%m")
-            start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
-        else:
-            start = extract_config["SETTINGS"].get("STARTDATE")
-        
-        # Generate periods list using the same logic as get_periods
-        try:
-            start_period = period_from_string(start)
-            end_period = period_from_string(end)
-            periods = (
-                [str(p) for p in start_period.get_range(end_period)]
-                if str(start_period) < str(end_period)
-                else [str(start_period)]
-            )
-        except Exception as e:
-            current_run.log_error(f"Error generating periods: {e!s}")
-            return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
-        
-        # Compute exhaustivity
-        exhaustivity_df = compute_exhaustivity(
-            pipeline_path=pipeline_path,
-            extract_id=extract_id,
-            periods=periods,
-        )
-        return exhaustivity_df
-        
-    except Exception as e:
-        logging.error(f"Exhaustivity calculation error: {e!s}")
-        current_run.log_error(f"Error in exhaustivity calculation: {e!s}")
-        return pl.DataFrame({"PERIOD": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})

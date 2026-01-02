@@ -1,123 +1,31 @@
 {
-    "SETTINGS": {
-        "SOURCE_DHIS2_CONNECTION": "drc-prs",
-        "EXTRACTION_MONTHS_WINDOW": 3,
+    "CONNECTIONS": {
+        "SOURCE_DHIS2": "drc-prs",
+        "TARGET_DHIS2": "drc-prs"
+    },
+    "EXTRACTION": {
+        "MONTHS_WINDOW": 3,
         "STARTDATE": "202506",
         "ENDDATE": "202512",
         "MODE": "DOWNLOAD_REPLACE"
     },
-    "DATA_ELEMENTS": {
-        "EXTRACTS": [
-            {
-                "EXTRACT_UID": "Fosa_exhaustivity_data_elements",
-                "UIDS": [
-                    "BVzmrRaTfcT",
-                    "BuNHpvE2fEr",
-                    "E1Nfbx2upTn",
-                    "EwiHKw8P2xz",
-                    "FVJ2v5RgBgL",
-                    "Gq9Z3wvbcsa",
-                    "Iz0aHMkdkQL",
-                    "JBUiL4Cykj6",
-                    "OUSS5mSrz1x",
-                    "OYVsvv6fCja",
-                    "PLjvTAvttMR",
-                    "PMuB7JCsLsg",
-                    "PlYGakAhqbk",
-                    "RPE8N0UZpdg",
-                    "S007ecRnpvZ",
-                    "UAuoPAiQ1tG",
-                    "Xt48UQAZppa",
-                    "a0i3MXpBmhT",
-                    "b0f8cOW1CFV",
-                    "bdy45DCTJLB",
-                    "c5nKAODeM8D",
-                    "cbuwM5uOq3O",
-                    "ccpDQ5umc0a",
-                    "dZNy8p5cZKT",
-                    "doMlZ2uA9kF",
-                    "eKHjiGzfBep",
-                    "fHyOLs6mPEr",
-                    "hgjnpRWXunB",
-                    "imqSmhfQTPN",
-                    "jlRZE5tTARe",
-                    "jokGP7OGiZ5",
-                    "lKvN4sxgsIL",
-                    "pScfYi2Qxop",
-                    "pbkiXu6bxQm",
-                    "uW5PSD9hNBr",
-                    "vQQ4gYZ4ccT",
-                    "vtqAD1gqMxx",
-                    "zeqeboHpEb2"
-                ],
-                "DATASET_UID": "wMCnDAQfGZN",
-                "DATASET_ORGUNITS_UID": null,
-                "ORG_UNITS_LEVEL": 5,
-                "FREQUENCY": "MONTHLY"
-            },
-            {
-                "EXTRACT_UID": "BCZ_exhaustivity_data_elements",
-                "UIDS": [
-                    "BNYzDZBVOBP",
-                    "DCJfRc1TpAR",
-                    "GShJaKnBvS2",
-                    "H77RuaEGD17",
-                    "MFcy5dErsKR",
-                    "Mx0jQkokP5Q",
-                    "OO4n4Nl0nhq",
-                    "PXSRmMNZnpM",
-                    "Qa1IAZbh7DD",
-                    "Qbr0Lq9Tnig",
-                    "QxeCkZVPmZ4",
-                    "SqGR1jQAA83",
-                    "WDZV0tIFV6M",
-                    "WH4cMQHfCT8",
-                    "Y06LJgRiqvf",
-                    "b5mg2cVtm48",
-                    "cDt1Gbikf0v",
-                    "ck0Ia0oPnd3",
-                    "dreVtvRayev",
-                    "f2Pr76MxXTD",
-                    "fCIOudKy6LP",
-                    "hZ0CgqXx3cP",
-                    "hrJZyUvxr2S",
-                    "j0TxNEeqLrA",
-                    "jZPX3DsHu6F",
-                    "krGXf8iXGUw",
-                    "lYWWtgrqgW8",
-                    "liobbb5SRzR",
-                    "lolDxZ0bdJF",
-                    "mb3efHxtzZS",
-                    "n80TxzWLDPb",
-                    "oh9mZEsP4gm",
-                    "pNeg6QS6VUA",
-                    "plLLbVoJwqK",
-                    "pn2lSDlGU8S",
-                    "qps2qV8Nk8a",
-                    "r8OFvnKvD27",
-                    "rL1IK7miYJh",
-                    "rlTM9yH1Vr9",
-                    "s1MmwpwLWa3",
-                    "sxW2NlrUJBF",
-                    "tDLeslflyjT",
-                    "tHs2Xe7T5em",
-                    "tIeOHye5rzh",
-                    "xISwOEjnYUw",
-                    "zaiAVQPuWq0",
-                    "zrVpZBnRhui",
-                    "zuCnFYZizYX"
-                ],
-                "DATASET_UID": "Om2WgL4TNEy",
-                "DATASET_ORGUNITS_UID": null,
-                "ORG_UNITS_LEVEL": 3,
-                "FREQUENCY": "MONTHLY"
-            }
-        ]
-    },
-    "REPORTING_RATES": {
-        "EXTRACTS": []
-    },
-    "INDICATORS": {
-        "EXTRACTS": []
-    }
+    "EXTRACTS": [
+        {
+            "EXTRACT_ID": "Fosa_exhaustivity_data_elements",
+            "DRUG_MAPPING_FILE": "drug_mapping_fosa.json",
+            "SOURCE_DATASET_UID": "wMCnDAQfGZN",
+            "TARGET_DATASET_UID": "z774dF9QToi",
+            "TARGET_DATA_ELEMENT_UID": "kaxgZZLAwGf",
+            "FREQUENCY": "MONTHLY"
+        },
+        {
+            "EXTRACT_ID": "BCZ_exhaustivity_data_elements",
+            "DRUG_MAPPING_FILE": "drug_mapping_bcz.json",
+            "SOURCE_DATASET_UID": "Om2WgL4TNEy",
+            "TARGET_DATASET_UID": "xrNLUayA875",
+            "TARGET_DATA_ELEMENT_UID": "tRMSUzNvN8e",
+            "FREQUENCY": "MONTHLY"
+        }
+    ]
 }
+
