@@ -1,15 +1,13 @@
 import logging
 import time
-from datetime import datetime
 from pathlib import Path
 
 import polars as pl
-from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run
-from openhexa.toolbox.dhis2.periods import period_from_string
 from utils import load_drug_mapping, load_pipeline_config, get_extract_config
 
 logger = logging.getLogger(__name__)
+
 
 def safe_log_info(message: str, max_retries: int = 3):
     """Log info with retry logic to handle API errors."""
@@ -25,6 +23,7 @@ def safe_log_info(message: str, max_retries: int = 3):
             logger.info(message)
             logger.warning(f"OpenHexa log_info failed after {max_retries} attempts: {e}")
 
+
 def safe_log_warning(message: str, max_retries: int = 3):
     """Log warning with retry logic to handle API errors."""
     for attempt in range(max_retries):
@@ -38,6 +37,7 @@ def safe_log_warning(message: str, max_retries: int = 3):
             logger.warning(message)
             logger.warning(f"OpenHexa log_warning failed after {max_retries} attempts: {e}")
 
+
 def safe_log_error(message: str, max_retries: int = 3):
     """Log error with retry logic to handle API errors."""
     for attempt in range(max_retries):
@@ -50,6 +50,7 @@ def safe_log_error(message: str, max_retries: int = 3):
                 continue
             logger.error(message)
             logger.error(f"OpenHexa log_error failed after {max_retries} attempts: {e}")
+            
 
 def compute_exhaustivity(
     pipeline_path: Path,
@@ -111,22 +112,9 @@ def compute_exhaustivity(
     # Use provided extracts_folder or determine it based on extract_id
     if extracts_folder is None:
         # Determine extracts folder based on extract_id (same logic as in pipeline.py)
+        # Format: "Extract {extract_id}" (e.g., "Extract Fosa_exhaustivity_data_elements")
         extracts_base = pipeline_path / "data" / "extracts"
-        
-        # Try to find folder by extract_id pattern
-        if "Fosa" in extract_id:
-            extracts_folder = extracts_base / "Extract lvl 5"
-        elif "BCZ" in extract_id:
-            extracts_folder = extracts_base / "Extract lvl 3"
-        else:
-            # Try to find by extract_id in folder names
-            for folder in extracts_base.iterdir():
-                if folder.is_dir() and extract_id in folder.name:
-                    extracts_folder = folder
-                    break
-            # Fallback to old structure if not found
-            if extracts_folder is None or not extracts_folder.exists():
-                extracts_folder = pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}"
+        extracts_folder = extracts_base / f"Extract {extract_id}"
     
     try:
         safe_log_info(f"Computing exhaustivity for extract: {extract_id}")
@@ -161,42 +149,42 @@ def compute_exhaustivity(
             )
         
         try:
-                available_files = [f for f in files_to_read.values() if f is not None]
-                safe_log_info(f"Reading {len(available_files)} parquet file(s) for exhaustivity computation")
+            available_files = [f for f in files_to_read.values() if f is not None]
+            safe_log_info(f"Reading {len(available_files)} parquet file(s) for exhaustivity computation")
+            
+            # Read all files and normalize schemas before concatenation
+            # This handles cases where some files have Null columns and others have String columns
+            # IMPORTANT: Select columns in a fixed order to avoid schema mismatch errors
+            required_cols_order = [
+                "PERIOD",
+                "DX_UID",
+                "CATEGORY_OPTION_COMBO",
+                "ORG_UNIT",
+                "VALUE",
+            ]
+            
+            dfs = []
+            for f in available_files:
+                df_file = pl.read_parquet(f)
                 
-                # Read all files and normalize schemas before concatenation
-                # This handles cases where some files have Null columns and others have String columns
-                # IMPORTANT: Select columns in a fixed order to avoid schema mismatch errors
-                required_cols_order = [
-                    "PERIOD",
-                    "DX_UID",
-                    "CATEGORY_OPTION_COMBO",
-                    "ORG_UNIT",
-                    "VALUE",
-                ]
+                # Ensure all required columns exist with correct types
+                # If a column is missing or Null type, cast it to String
+                for col in required_cols_order:
+                    if col not in df_file.columns:
+                        df_file = df_file.with_columns(pl.lit(None, dtype=pl.Utf8).alias(col))
+                    elif df_file[col].dtype == pl.Null:
+                        # Convert Null type to String type
+                        df_file = df_file.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
                 
-                dfs = []
-                for f in available_files:
-                    df_file = pl.read_parquet(f)
-                    
-                    # Ensure all required columns exist with correct types
-                    # If a column is missing or Null type, cast it to String
-                    for col in required_cols_order:
-                        if col not in df_file.columns:
-                            df_file = df_file.with_columns(pl.lit(None, dtype=pl.Utf8).alias(col))
-                        elif df_file[col].dtype == pl.Null:
-                            # Convert Null type to String type
-                            df_file = df_file.with_columns(pl.col(col).cast(pl.Utf8).alias(col))
-                    
-                    # Select only required columns in fixed order to ensure consistent schema
-                    # This prevents "schema names differ" errors when concatenating
-                    df_file = df_file.select(required_cols_order)
-                    
-                    dfs.append(df_file)
+                # Select only required columns in fixed order to ensure consistent schema
+                # This prevents "schema names differ" errors when concatenating
+                df_file = df_file.select(required_cols_order)
                 
-                # Use how="vertical_relaxed" to allow automatic type coercion if schemas differ slightly
-                df = pl.concat(dfs, how="vertical_relaxed")
-                safe_log_info(f"Loaded {len(df)} rows from extracted data")
+                dfs.append(df_file)
+            
+            # Use how="vertical_relaxed" to allow automatic type coercion if schemas differ slightly
+            df = pl.concat(dfs, how="vertical_relaxed")
+            safe_log_info(f"Loaded {len(df)} rows from extracted data")
         except Exception as e:
             raise RuntimeError(f"Error reading parquet files for exhaustivity computation: {e!s}") from e
         
@@ -307,7 +295,7 @@ def compute_exhaustivity(
                     # Load mappings from DRUG_MAPPING_FILE
                     drug_mapping_file = matching_extract.get("DRUG_MAPPING_FILE")
                     if drug_mapping_file:
-                        extract_mappings, uids = load_drug_mapping(config_dir, drug_mapping_file)
+                        extract_mappings, _ = load_drug_mapping(config_dir, drug_mapping_file)
                         if extract_mappings:
                             safe_log_info(f"Loaded {len(extract_mappings)} mappings from {drug_mapping_file} for {extract_id}")
                 else:
@@ -329,31 +317,91 @@ def compute_exhaustivity(
                 relevant_dx_uids_source = None
             
             # Build expected_dx_uids_by_coc from mappings
-            # IMPORTANT: The extracted data contains COC TARGET values (as returned by DHIS2 analytics API),
-            # so we must index by COC TARGET, not COC SOURCE
-            # The mapping structure is: COC SOURCE -> COC TARGET, so we invert it: COC TARGET -> DX_UID SOURCE
+            # NOTE: In load_drug_mapping, we create {coc: coc} (source = target, no transformation)
+            # The extracted data contains COCs directly from DHIS2 (no transformation)
+            # So we can use coc_map.keys() or coc_map.values() - they're the same
             expected_dx_uids_by_coc_sets: dict[str, set[str]] = {}
             for dx_uid_source, mapping in extract_mappings.items():
                 if relevant_dx_uids_source and dx_uid_source not in relevant_dx_uids_source:
                     continue
                 coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
-                # Index by COC TARGET (values of coc_map), use DX_UID SOURCE
-                # This is because extracted data contains COC TARGET values
-                for src_coc, target_coc in coc_map.items():
-                    if target_coc is None:
+                # Iterate over COCs (keys and values are identical since source = target)
+                for coc in coc_map:
+                    if coc is None:
                         continue
-                    target_coc_str = str(target_coc).strip()
-                    if not target_coc_str:
+                    coc_str = str(coc).strip()
+                    if not coc_str:
                         continue
-                    # Index by COC TARGET (extracted data has TARGET values), use DX_UID SOURCE
-                    expected_dx_uids_by_coc_sets.setdefault(target_coc_str, set()).add(str(dx_uid_source))
+                    # Index by COC (extracted data has these COCs directly from DHIS2)
+                    expected_dx_uids_by_coc_sets.setdefault(coc_str, set()).add(str(dx_uid_source))
             
             expected_dx_uids_by_coc = {
                 coc: sorted(list(dx_uids)) for coc, dx_uids in expected_dx_uids_by_coc_sets.items()
             }
             logging.info(
-                f"Expected DX_UIDs per COC loaded from mappings (indexed by COC TARGET): {len(expected_dx_uids_by_coc)} COCs"
+                f"Expected DX_UIDs per COC loaded from mappings: {len(expected_dx_uids_by_coc)} COCs"
             )
+        
+        # Filter data by valid (DX_UID, COC) pairs from mappings (like other pipelines do)
+        # This ensures we only process valid pairs according to the mapping
+        if extract_mappings:
+            # Build set of valid (DX_UID, COC) pairs from mappings
+            valid_pairs = set()
+            for dx_uid_source, mapping in extract_mappings.items():
+                if relevant_dx_uids_source and dx_uid_source not in relevant_dx_uids_source:
+                    continue
+                coc_map = mapping.get("CATEGORY_OPTION_COMBO", {}) or {}
+                for coc in coc_map:
+                    if coc is None:
+                        continue
+                    coc_str = str(coc).strip()
+                    if coc_str:
+                        valid_pairs.add((str(dx_uid_source), coc_str))
+            
+            if valid_pairs:
+                safe_log_info(f"Built {len(valid_pairs)} valid (DX_UID, COC) pairs from {len(extract_mappings)} mappings")
+            else:
+                safe_log_warning("No valid (DX_UID, COC) pairs found in extract_mappings, skipping filter")
+            
+            if valid_pairs:
+                rows_before_filter = len(df)
+                safe_log_info(
+                    f"Filtering data by valid (DX_UID, COC) pairs: {len(valid_pairs)} valid pairs from mapping, "
+                    f"{rows_before_filter} rows before filter"
+                )
+                # Filter to keep only valid (DX_UID, COC) pairs
+                # Create a DataFrame with valid pairs and join to filter
+                valid_pairs_list = list(valid_pairs)
+                valid_pairs_df = pl.DataFrame(
+                    {
+                        "DX_UID": [pair[0] for pair in valid_pairs_list],
+                        "CATEGORY_OPTION_COMBO": [pair[1] for pair in valid_pairs_list],
+                    }
+                )
+                df = df.join(valid_pairs_df, on=["DX_UID", "CATEGORY_OPTION_COMBO"], how="inner")
+                rows_after_filter = len(df)
+                if rows_before_filter != rows_after_filter:
+                    safe_log_info(
+                        f"Filtered data by valid (DX_UID, COC) pairs: {rows_before_filter} -> {rows_after_filter} rows "
+                        f"({rows_before_filter - rows_after_filter} rows with invalid pairs removed)"
+                    )
+                else:
+                    safe_log_info(
+                        f"Filtered data by valid (DX_UID, COC) pairs: {rows_after_filter} rows (all data matches valid pairs)"
+                    )
+        else:
+            safe_log_warning("extract_mappings is None or empty, skipping filter by valid pairs")
+        if expected_dx_uids_by_coc:
+            # Fallback: if no extract_mappings but we have expected_dx_uids_by_coc, filter by COC only
+            expected_cocs = set(expected_dx_uids_by_coc.keys())
+            rows_before_filter = len(df)
+            df = df.filter(pl.col("CATEGORY_OPTION_COMBO").is_in(list(expected_cocs)))
+            rows_after_filter = len(df)
+            if rows_before_filter != rows_after_filter:
+                logging.info(
+                    f"Filtered data by expected COCs (fallback): {rows_before_filter} -> {rows_after_filter} rows "
+                    f"({rows_before_filter - rows_after_filter} rows with unexpected COCs removed)"
+                )
         
         # 4) Fallback: if no mappings available, derive from extracted data (using SOURCE values)
         if not expected_dx_uids_by_coc:
@@ -394,31 +442,6 @@ def compute_exhaustivity(
             ])
         )
         
-        # OLD CODE (commented - was using expected_org_units to create complete grid):
-        # Create a complete grid of all possible (PERIOD, COC, ORG_UNIT) combinations
-        # This ensures that missing COCs are marked with exhaustivity = 0
-        # periods_in_data = df["PERIOD"].unique().to_list() if len(df) > 0 else []
-        # # Use expected_org_units if provided, otherwise derive from data (like previous push)
-        # if expected_org_units and len(expected_org_units) > 0:
-        #     org_units_in_data = expected_org_units
-        # else:
-        #     org_units_in_data = df["ORG_UNIT"].unique().to_list() if len(df) > 0 else []
-        
-        # NEW CODE: Only use org units present in the data (don't create grid for missing org units)
-        periods_in_data = df["PERIOD"].unique().to_list() if len(df) > 0 else []
-        org_units_in_data = df["ORG_UNIT"].unique().to_list() if len(df) > 0 else []
-        cocs_in_mappings = list(expected_dx_uids_by_coc.keys()) if expected_dx_uids_by_coc else []
-        
-        # Build a set of (PERIOD, COC, ORG_UNIT) combinations present in data
-        # Use vectorized Polars operation instead of iter_rows
-        present_combinations = set(
-            zip(
-                df_grouped_for_log["PERIOD"].to_list(),
-                df_grouped_for_log["CATEGORY_OPTION_COMBO"].to_list(),
-                df_grouped_for_log["ORG_UNIT"].to_list(),
-            )
-        )
-        
         # Check exhaustivity: for each (PERIOD, ORG_UNIT, COC), check if all expected DX_UIDs (from mappings) are present AND non-null
         # Logic: exhaustivity = 1 if all expected DX_UIDs for this COC are present with non-null values, 0 otherwise
         # We only check valid (DX_UID, COC) pairs according to mappings
@@ -445,7 +468,7 @@ def compute_exhaustivity(
             # Build a map of DX_UID -> null_flag for present DX_UIDs
             dx_uid_to_null_flag = {
                 dx_uid: null_flag
-                for dx_uid, null_flag in zip(dx_uids_present_list, null_flags_list)
+                for dx_uid, null_flag in zip(dx_uids_present_list, null_flags_list, strict=False)
             }
             
             # Check if ALL DX_UIDs mappés pour ce COC sont présents ET ont des valeurs non-null
@@ -478,54 +501,8 @@ def compute_exhaustivity(
                     "EXHAUSTIVITY_VALUE": exhaustivity_value,
                 })
         
-        # Add missing (PERIOD, COC, ORG_UNIT) combinations with exhaustivity = 0
-        # Use Polars cross join instead of triple nested loop for better performance
-        periods_for_grid = periods_in_data
-        if cocs_in_mappings and periods_for_grid and org_units_in_data:
-            # Create DataFrames for each dimension
-            periods_df = pl.DataFrame({"PERIOD": periods_for_grid})
-            cocs_df = pl.DataFrame({"CATEGORY_OPTION_COMBO": cocs_in_mappings})
-            org_units_df = pl.DataFrame({"ORG_UNIT": org_units_in_data})
-            
-            # Cross join to get all combinations
-            all_combinations = periods_df.join(cocs_df, how="cross").join(org_units_df, how="cross")
-            
-            # Create DataFrame of present combinations for anti-join
-            present_df = pl.DataFrame({
-                "PERIOD": [p for p, _, _ in present_combinations],
-                "CATEGORY_OPTION_COMBO": [c for _, c, _ in present_combinations],
-                "ORG_UNIT": [o for _, _, o in present_combinations],
-            })
-            
-            # Anti-join to find missing combinations
-            missing_combinations = all_combinations.join(
-                present_df,
-                on=["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"],
-                how="anti"
-            )
-            
-            # Add exhaustivity = 0 rows for missing combinations
-            if len(missing_combinations) > 0:
-                # Build COC to DX_UIDs mapping as a DataFrame for efficient join
-                coc_dx_rows = []
-                for coc, dx_uids in expected_dx_uids_by_coc.items():
-                    for dx_uid in dx_uids:
-                        coc_dx_rows.append({"CATEGORY_OPTION_COMBO": coc, "DX_UID": dx_uid})
-                
-                if coc_dx_rows:
-                    coc_dx_df = pl.DataFrame(coc_dx_rows)
-                    # Join to expand missing combinations with their DX_UIDs
-                    missing_with_dx = missing_combinations.join(
-                        coc_dx_df, on="CATEGORY_OPTION_COMBO", how="left"
-                    ).filter(pl.col("DX_UID").is_not_null())
-                    
-                    # Add exhaustivity = 0 for all missing
-                    missing_rows = missing_with_dx.with_columns(
-                        pl.lit(0).alias("EXHAUSTIVITY_VALUE")
-                    ).select(["PERIOD", "DX_UID", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "EXHAUSTIVITY_VALUE"])
-                    
-                    # Convert to list of dicts and extend exhaustivity_rows
-                    exhaustivity_rows.extend(missing_rows.to_dicts())
+        # Note: Complete grid creation with all expected ORG_UNITs and COCs happens later (after exhaustivity_df is created)
+        # This ensures we create the full form grid to check if hospitals filled everything correctly
         
         # Create the final exhaustivity dataframe
         if exhaustivity_rows:

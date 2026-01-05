@@ -61,7 +61,7 @@ def dhis2_request(session, method: str, url: str, **kwargs) -> dict:
 
 
 # extract data from source DHIS2
-@pipeline("dhis2_exhaustivity", timeout=14400)  # 4 hours (3600 * 4)
+@pipeline("dhis2_exhaustivity", timeout=3600)  # 1 hour
 @parameter(
     code="run_ou_sync",
     name="Update dataset org units (recommended)",
@@ -91,14 +91,7 @@ def dhis2_request(session, method: str, url: str, **kwargs) -> dict:
     default=False,
     help="Push data to target DHIS2. Set to True only for production runs.",
 )
-@parameter(
-    code="run_ds_sync",
-    name="Sync dataset statuses (after push)",
-    type=bool,
-    default=False,
-    help="Sync dataset completion statuses (not implemented yet).",
-)
-def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_data: bool, run_push_data: bool, run_ds_sync: bool):
+def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_data: bool, run_push_data: bool):
     """Extract data elements from the PRS DHIS2 instance.
 
     Compute the exhaustivity value based on required columns completeness.
@@ -157,11 +150,6 @@ def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_da
             wait=(compute_ready and sync_ready),
         )
 
-        # 5) Optional dataset statuses sync (after push) - not implemented yet
-        # if run_push_data and run_ds_sync:
-        #     # Dataset statuses sync not implemented yet
-        #     pass
-
     except Exception as e:
         current_run.log_error(f"An error occurred: {e}")
         raise
@@ -172,7 +160,7 @@ def extract_data(
     pipeline_path: Path,
     run_task: bool = True,
 ) -> bool:
-    """Extracts data elements from the source DHIS2 instance and saves them in parquet format."""
+    """Extracts data elements from the source DHIS2 instance and saves them in parquet format. Check with thomas for missing values"""
     if not run_task:
         current_run.log_info("Data elements extraction task skipped.")
         return True
@@ -189,23 +177,39 @@ def extract_data(
     )
 
     try:
-        # Get extraction window (number of months to extract, including current month)
-        extraction_window = config["EXTRACTION"].get("MONTHS_WINDOW", 3)
+        # Check if dynamic date is enabled
+        dynamic_date = config["EXTRACTION"].get("DYNAMIC_DATE", True)  # Default to True for backward compatibility
         
-        # ENDDATE: Always use current month (datetime.now()) - overrides config value
-        # Config values are kept for reference/documentation but are overridden by dynamic logic
-        end = datetime.now().strftime("%Y%m")
-        config_enddate = config["EXTRACTION"].get("ENDDATE")
-        if config_enddate:
-            current_run.log_info(f"ENDDATE in config ({config_enddate}) overridden by dynamic date: {end}")
-        
-        # STARTDATE: Always calculated from ENDDATE and EXTRACTION_MONTHS_WINDOW - overrides config value
-        # Example: if EXTRACTION_MONTHS_WINDOW=3 and ENDDATE=202412, STARTDATE=202410 (3 months: Oct, Nov, Dec)
-        end_date = datetime.strptime(end, "%Y%m")
-        start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
-        config_startdate = config["EXTRACTION"].get("STARTDATE")
-        if config_startdate:
-            current_run.log_info(f"STARTDATE in config ({config_startdate}) overridden by dynamic calculation: {start}")
+        if dynamic_date:
+            # Dynamic mode: use current month + MONTHS_WINDOW
+            extraction_window = config["EXTRACTION"].get("MONTHS_WINDOW", 3)
+            
+            # ENDDATE: Use current month (datetime.now())
+            end = datetime.now().strftime("%Y%m")
+            config_enddate = config["EXTRACTION"].get("ENDDATE")
+            if config_enddate:
+                current_run.log_info(f"ENDDATE in config ({config_enddate}) overridden by dynamic date: {end}")
+            
+            # STARTDATE: Calculated from ENDDATE and MONTHS_WINDOW
+            # Example: if MONTHS_WINDOW=3 and ENDDATE=202412, STARTDATE=202410 (3 months: Oct, Nov, Dec)
+            end_date = datetime.strptime(end, "%Y%m")
+            start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
+            config_startdate = config["EXTRACTION"].get("STARTDATE")
+            if config_startdate:
+                current_run.log_info(f"STARTDATE in config ({config_startdate}) overridden by dynamic calculation: {start}")
+            
+            current_run.log_info(
+                f"Using DYNAMIC_DATE mode: {start} to {end} ({extraction_window} months including current month)"
+            )
+        else:
+            # Static mode: use STARTDATE and ENDDATE from config
+            start = config["EXTRACTION"].get("STARTDATE")
+            end = config["EXTRACTION"].get("ENDDATE")
+            
+            if not start or not end:
+                raise ValueError("DYNAMIC_DATE is False but STARTDATE or ENDDATE is missing in config")
+            
+            current_run.log_info(f"Using STATIC_DATE mode: {start} to {end} (from config)")
         
     except Exception as e:
         raise Exception(f"Error in start/end date configuration: {e}") from e
@@ -435,10 +439,21 @@ def compute_exhaustivity_data(
     config = load_pipeline_config(pipeline_path / "configuration")
     
     # Get date range (same logic as extract_data)
-    extraction_window = config["EXTRACTION"].get("MONTHS_WINDOW", 3)
-    end = datetime.now().strftime("%Y%m")
-    end_date = datetime.strptime(end, "%Y%m")
-    start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
+    dynamic_date = config["EXTRACTION"].get("DYNAMIC_DATE", True)  # Default to True for backward compatibility
+    
+    if dynamic_date:
+        # Dynamic mode: use current month + MONTHS_WINDOW
+        extraction_window = config["EXTRACTION"].get("MONTHS_WINDOW", 3)
+        end = datetime.now().strftime("%Y%m")
+        end_date = datetime.strptime(end, "%Y%m")
+        start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
+    else:
+        # Static mode: use STARTDATE and ENDDATE from config
+        start = config["EXTRACTION"].get("STARTDATE")
+        end = config["EXTRACTION"].get("ENDDATE")
+        
+        if not start or not end:
+            raise ValueError("DYNAMIC_DATE is False but STARTDATE or ENDDATE is missing in config")
     
     # Note: Queue is reset at pipeline start (in main function) to avoid race conditions
     # Compute exhaustivity for all extracts
@@ -597,39 +612,12 @@ def compute_exhaustivity_and_queue(
     # Also include all requested periods to ensure we create files even if they have no data (exhaustivity=0)
     periods_to_save = sorted(set(periods_in_result + exhaustivity_periods))
 
-    # OLD CODE (commented - was using expected_org_units to fill missing org units):
-    # Use expected_org_units from SOURCE_DATASET_UID (no fallback - must be set above)
-    # if not expected_org_units:
-    #     raise ValueError(f"expected_org_units is None for extract {extract_id} - this should not happen")
-    # 
-    # all_org_units_for_extract = expected_org_units
-    # org_units_by_period: dict[str, list[str]] = {}
-    
-    # NEW CODE: We don't use expected_org_units anymore (only use org units present in data)
-    # But we still need to pass it to compute_exhaustivity for backward compatibility
-    # (it won't be used to create complete grid anymore, only for reference)
-    
     for period in periods_to_save:
         # Filter for the current period
         period_exhaustivity = exhaustivity_df.filter(pl.col("PERIOD") == period)
         
         if len(period_exhaustivity) == 0:
             # If no data for this period, skip it (don't create rows for org units without data)
-            # OLD CODE (commented - was creating exhaustivity=0 for all org units):
-            # if all_org_units_for_extract:
-            #     period_exhaustivity = pl.DataFrame({
-            #         "PERIOD": [period] * len(all_org_units_for_extract),
-            #         "ORG_UNIT": all_org_units_for_extract,
-            #         "EXHAUSTIVITY_VALUE": [0] * len(all_org_units_for_extract),
-            #     })
-            #     current_run.log_info(
-            #         f"Period {period}: no data, filled {len(all_org_units_for_extract)} org units with EXHAUSTIVITY_VALUE=0"
-            #     )
-            # else:
-            #     current_run.log_warning(
-            #         f"No exhaustivity data computed for period {period}, and no org units available to fill with zeros."
-            #     )
-            #     continue
             current_run.log_info(
                 f"Period {period}: no data, skipping "
                 f"(no org units will be pushed for this period)"
@@ -645,31 +633,28 @@ def compute_exhaustivity_and_queue(
             .drop("CATEGORY_OPTION_COMBO", strict=False)
         )
         
-        # OLD CODE (commented - was adding missing org units with exhaustivity=0):
-        # Add missing org units with exhaustivity=0 (org units from dataset that have no data)
-        # if all_org_units_for_extract:
-        #     existing_org_units = set(period_exhaustivity_org_level["ORG_UNIT"].to_list())
-        #     missing_org_units = [ou for ou in all_org_units_for_extract if ou not in existing_org_units]
-        #     
-        #     if missing_org_units:
-        #         missing_df = pl.DataFrame({
-        #             "PERIOD": [period] * len(missing_org_units),
-        #             "ORG_UNIT": missing_org_units,
-        #             "EXHAUSTIVITY_VALUE": [0] * len(missing_org_units),
-        #         })
-        #         period_exhaustivity_org_level = pl.concat(
-        #             [period_exhaustivity_org_level, missing_df], 
-        #             how="vertical_relaxed"
-        #         )
-        #         current_run.log_info(
-        #             f"Period {period}: added {len(missing_org_units)} missing ORG_UNITs with EXHAUSTIVITY_VALUE=0"
-        #         )
-        # NEW CODE: Only keep org units that are present in the data (don't add missing ones)
-        
         # Calculate statistics for logging
         num_org_units = len(period_exhaustivity_org_level)
         num_values_1 = int(period_exhaustivity_org_level["EXHAUSTIVITY_VALUE"].sum())
         percentage_1 = (num_values_1 / num_org_units * 100) if num_org_units > 0 else 0.0
+        
+        # Calculate COC-level statistics (before aggregation to ORG_UNIT level)
+        # Aggregate by (PERIOD, COC, ORG_UNIT): exhaustivity = 1 only if all DX_UIDs for that COC are 1
+        if "CATEGORY_OPTION_COMBO" in period_exhaustivity.columns:
+            period_exhaustivity_coc_level = (
+                period_exhaustivity
+                .group_by(["PERIOD", "CATEGORY_OPTION_COMBO", "ORG_UNIT"])
+                .agg([pl.col("EXHAUSTIVITY_VALUE").min().alias("EXHAUSTIVITY_VALUE")])
+            )
+            coc_count_1_total = int(period_exhaustivity_coc_level.filter(pl.col("EXHAUSTIVITY_VALUE") == 1).height)
+            coc_count_0_total = int(period_exhaustivity_coc_level.filter(pl.col("EXHAUSTIVITY_VALUE") == 0).height)
+            coc_total = len(period_exhaustivity_coc_level)
+            coc_percentage = (coc_count_1_total / coc_total * 100) if coc_total > 0 else 0.0
+        else:
+            coc_count_1_total = 0
+            coc_count_0_total = 0
+            coc_total = 0
+            coc_percentage = 0.0
 
         try:
             # Write aggregated file in the main processed folder (replaces old COC-level files)
@@ -684,7 +669,8 @@ def compute_exhaustivity_and_queue(
             
             # Clean log with only essential info
             current_run.log_info(
-                f"📊 Period {period}: {num_org_units} ORG_UNITs, {percentage_1:.1f}% exhaustivity"
+                f"📊 Period {period}: {num_org_units} ORG_UNITs, {percentage_1:.1f}% exhaustivity | "
+                f"COCs: {coc_count_1_total} complètes (1), {coc_count_0_total} incomplètes (0) = {coc_percentage:.1f}% complètes"
             )
         except Exception as e:
             current_run.log_error(f"❌ Error saving exhaustivity data for {extract_id} - period {period}: {e!s}")

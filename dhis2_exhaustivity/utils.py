@@ -44,10 +44,10 @@ def load_pipeline_config(config_dir: Path) -> dict:
     """Load the main pipeline configuration.
     
     Loads extract_config.json and push_settings.json and merges them.
-    
+
     Args:
         config_dir: Path to the configuration directory.
-        
+
     Returns:
         dict: Merged configuration with CONNECTIONS, EXTRACTION, EXTRACTS, and PUSH_SETTINGS.
     """
@@ -71,11 +71,11 @@ def load_pipeline_config(config_dir: Path) -> dict:
 
 def get_extract_config(config: dict, extract_id: str) -> dict | None:
     """Get configuration for a specific extract.
-    
+
     Args:
         config: Pipeline configuration dict.
         extract_id: The extract ID to find.
-        
+
     Returns:
         Extract configuration dict or None if not found.
     """
