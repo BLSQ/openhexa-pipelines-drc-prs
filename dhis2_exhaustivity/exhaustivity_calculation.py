@@ -247,7 +247,7 @@ def compute_exhaustivity(
             .then(pl.lit(True))
             .when(pl.col("VALUE").cast(pl.Utf8, strict=False).is_null())
             .then(pl.lit(True))
-            .when(not pl.col("VALUE").cast(pl.Utf8, strict=False).str.strip_chars())
+            .when(pl.col("VALUE").cast(pl.Utf8, strict=False).str.strip_chars().str.len_chars() == 0)
             .then(pl.lit(True))
             .when(pl.col("VALUE").cast(pl.Utf8, strict=False).str.to_lowercase() == "none")
             .then(pl.lit(True))
