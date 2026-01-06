@@ -1,10 +1,17 @@
+from __future__ import annotations
+
 import logging
 import time
 from pathlib import Path
 
 import polars as pl
 from openhexa.sdk import current_run
-from utils import load_drug_mapping, load_pipeline_config, get_extract_config
+
+from utils import (
+    get_extract_config,
+    load_drug_mapping,
+    load_pipeline_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +63,12 @@ def compute_exhaustivity(
     pipeline_path: Path,
     extract_id: str,
     periods: list[str],
-    expected_dx_uids: list[str] = None,
-    expected_org_units: list[str] = None,
-    extract_config_item: dict = None,
-    extracts_folder: Path = None,
-    new_org_units: list[str] = None,
-    current_period: str = None,
+    expected_dx_uids: list[str] | None = None,
+    expected_org_units: list[str] | None = None,
+    extract_config_item: dict | None = None,
+    extracts_folder: Path | None = None,
+    new_org_units: list[str] | None = None,
+    current_period: str | None = None,
 ) -> pl.DataFrame:
     """Computes exhaustivity from extracted data based on VALUE null checks.
     
@@ -86,16 +93,20 @@ def compute_exhaustivity(
         Identifier for the data extract.
     periods : list[str]
         List of periods to process.
-    expected_dx_uids : list[str], optional
+    expected_dx_uids : list[str] | None, optional
         List of expected DX_UIDs for this extract. If provided, missing combinations
         will be marked as exhaustivity = 0.
-    expected_org_units : list[str], optional
+    expected_org_units : list[str] | None, optional
         List of expected ORG_UNITs for this extract. If provided, missing combinations
         will be marked as exhaustivity = 0.
-    new_org_units : list[str], optional
+    extract_config_item : dict | None, optional
+        Extract configuration dictionary from extract_config.json.
+    extracts_folder : Path | None, optional
+        Path to the extracts folder. If None, will be determined from extract_id.
+    new_org_units : list[str] | None, optional
         List of newly added org unit IDs. These will only be included in exhaustivity
         for current_period and onwards, not for historical periods.
-    current_period : str, optional
+    current_period : str | None, optional
         The current period (e.g., '202512'). New org units are excluded from periods
         before this one.
     
@@ -186,12 +197,15 @@ def compute_exhaustivity(
             df = pl.concat(dfs, how="vertical_relaxed")
             safe_log_info(f"Loaded {len(df)} rows from extracted data")
         except Exception as e:
-            raise RuntimeError(f"Error reading parquet files for exhaustivity computation: {e!s}") from e
+            raise RuntimeError(
+                f"Error reading parquet files for exhaustivity computation: {e!s}"
+            ) from e
         
         # IMPORTANT: Do NOT apply mappings before exhaustivity calculation
         # We need to calculate exhaustivity with COC SOURCE and DX_UID SOURCE values
         # The mappings define which (COC SOURCE, DX_UID SOURCE) pairs are valid
-        # Mappings (COC SOURCE → COC TARGET, DX_UID SOURCE → DX_UID TARGET) will be applied AFTER exhaustivity calculation
+        # Mappings (COC SOURCE → COC TARGET, DX_UID SOURCE → DX_UID TARGET)
+        # will be applied AFTER exhaustivity calculation
         
         # Only apply filters (org units) if provided, but keep COCs and DX_UIDs as SOURCE
         if extract_config_item:
@@ -199,16 +213,25 @@ def compute_exhaustivity(
             org_units_filter = extract_config_item.get("ORG_UNITS")
             if org_units_filter:
                 df = df.filter(pl.col("ORG_UNIT").is_in(org_units_filter))
-                safe_log_info(f"Filtered by specific org units: {org_units_filter}")
+                safe_log_info(
+                    f"Filtered by specific org units: {org_units_filter}"
+                )
         
-        # Note: Mappings are NOT applied here - they will be applied later in apply_analytics_data_element_extract_config
-        # This ensures that exhaustivity calculation uses COC SOURCE and DX_UID SOURCE values
-        # and only considers valid pairs defined in extract_config.MAPPINGS
+        # Note: Mappings are NOT applied here - they will be applied later
+        # in apply_analytics_data_element_extract_config
+        # This ensures that exhaustivity calculation uses COC SOURCE and DX_UID SOURCE
+        # values and only considers valid pairs defined in extract_config.MAPPINGS
         
         # Check if dataframe is empty
         if len(df) == 0:
             safe_log_warning("DataFrame is empty after filtering, returning empty exhaustivity result")
-            return pl.DataFrame({"PERIOD": [], "DX_UID": [], "CATEGORY_OPTION_COMBO": [], "ORG_UNIT": [], "EXHAUSTIVITY_VALUE": []})
+            return pl.DataFrame({
+                "PERIOD": [],
+                "DX_UID": [],
+                "CATEGORY_OPTION_COMBO": [],
+                "ORG_UNIT": [],
+                "EXHAUSTIVITY_VALUE": [],
+            })
         
         # Check required columns exist
         required_columns = ["PERIOD", "DX_UID", "ORG_UNIT", "VALUE", "CATEGORY_OPTION_COMBO"]
@@ -224,7 +247,7 @@ def compute_exhaustivity(
             .then(pl.lit(True))
             .when(pl.col("VALUE").cast(pl.Utf8, strict=False).is_null())
             .then(pl.lit(True))
-            .when(pl.col("VALUE").cast(pl.Utf8, strict=False).str.strip_chars() == "")
+            .when(not pl.col("VALUE").cast(pl.Utf8, strict=False).str.strip_chars())
             .then(pl.lit(True))
             .when(pl.col("VALUE").cast(pl.Utf8, strict=False).str.to_lowercase() == "none")
             .then(pl.lit(True))
@@ -297,7 +320,10 @@ def compute_exhaustivity(
                     if drug_mapping_file:
                         extract_mappings, _ = load_drug_mapping(config_dir, drug_mapping_file)
                         if extract_mappings:
-                            safe_log_info(f"Loaded {len(extract_mappings)} mappings from {drug_mapping_file} for {extract_id}")
+                            safe_log_info(
+                                f"Loaded {len(extract_mappings)} mappings "
+                                f"from {drug_mapping_file} for {extract_id}"
+                            )
                 else:
                     safe_log_warning(f"Extract {extract_id} not found in pipeline_config")
             except Exception as e:
@@ -359,7 +385,10 @@ def compute_exhaustivity(
                         valid_pairs.add((str(dx_uid_source), coc_str))
             
             if valid_pairs:
-                safe_log_info(f"Built {len(valid_pairs)} valid (DX_UID, COC) pairs from {len(extract_mappings)} mappings")
+                safe_log_info(
+                    f"Built {len(valid_pairs)} valid (DX_UID, COC) pairs "
+                    f"from {len(extract_mappings)} mappings"
+                )
             else:
                 safe_log_warning("No valid (DX_UID, COC) pairs found in extract_mappings, skipping filter")
             
@@ -387,7 +416,8 @@ def compute_exhaustivity(
                     )
                 else:
                     safe_log_info(
-                        f"Filtered data by valid (DX_UID, COC) pairs: {rows_after_filter} rows (all data matches valid pairs)"
+                        f"Filtered data by valid (DX_UID, COC) pairs: "
+                        f"{rows_after_filter} rows (all data matches valid pairs)"
                     )
         else:
             safe_log_warning("extract_mappings is None or empty, skipping filter by valid pairs")
@@ -405,7 +435,10 @@ def compute_exhaustivity(
         
         # 4) Fallback: if no mappings available, derive from extracted data (using SOURCE values)
         if not expected_dx_uids_by_coc:
-            logging.info("No mappings found in extract_config or push_config, deriving pairs from extracted data (SOURCE values)")
+            logging.info(
+                "No mappings found in extract_config or push_config, "
+                "deriving pairs from extracted data (SOURCE values)"
+            )
             # Use df_all_periods_raw which has COC SOURCE and DX_UID SOURCE (before mapping)
             # Filter by extract_config.UIDS if available
             if extract_config_item and extract_config_item.get("UIDS"):
@@ -416,15 +449,20 @@ def compute_exhaustivity(
             
             if len(df_all_periods_filtered) > 0:
                 coc_dx_uids_df = (
-                    df_all_periods_filtered.group_by("CATEGORY_OPTION_COMBO")
+                    df_all_periods_filtered
+                    .group_by("CATEGORY_OPTION_COMBO")
                     .agg(pl.col("DX_UID").unique().sort().alias("DX_UIDs"))
                 )
                 expected_dx_uids_by_coc = {
-                    row["CATEGORY_OPTION_COMBO"]: row["DX_UIDs"] if isinstance(row["DX_UIDs"], list) else [row["DX_UIDs"]]
+                    row["CATEGORY_OPTION_COMBO"]: (
+                        row["DX_UIDs"] if isinstance(row["DX_UIDs"], list)
+                        else [row["DX_UIDs"]]
+                    )
                     for row in coc_dx_uids_df.iter_rows(named=True)
                 }
                 logging.info(
-                    f"Expected DX_UIDs per COC derived from extracted data (SOURCE values, fallback): {len(expected_dx_uids_by_coc)} COCs"
+                    f"Expected DX_UIDs per COC derived from extracted data "
+                    f"(SOURCE values, fallback): {len(expected_dx_uids_by_coc)} COCs"
                 )
             else:
                 logging.warning("No data available to derive COC/DX_UID pairs. Using empty mapping.")
@@ -442,7 +480,8 @@ def compute_exhaustivity(
             ])
         )
         
-        # Check exhaustivity: for each (PERIOD, ORG_UNIT, COC), check if all expected DX_UIDs (from mappings) are present AND non-null
+        # Check exhaustivity: for each (PERIOD, ORG_UNIT, COC), check if all
+        # expected DX_UIDs (from mappings) are present AND non-null
         # Logic: exhaustivity = 1 if all expected DX_UIDs for this COC are present with non-null values, 0 otherwise
         # We only check valid (DX_UID, COC) pairs according to mappings
         # Note: Using iter_rows here is acceptable for complex set operations
@@ -501,7 +540,8 @@ def compute_exhaustivity(
                     "EXHAUSTIVITY_VALUE": exhaustivity_value,
                 })
         
-        # Note: Complete grid creation with all expected ORG_UNITs and COCs happens later (after exhaustivity_df is created)
+        # Note: Complete grid creation with all expected ORG_UNITs and COCs
+        # happens later (after exhaustivity_df is created)
         # This ensures we create the full form grid to check if hospitals filled everything correctly
         
         # Create the final exhaustivity dataframe
@@ -573,7 +613,9 @@ def compute_exhaustivity(
                 )
             else:
                 logging.info(
-                    f"No data available, creating grid with ALL {len(expected_org_units)} expected ORG_UNITs (all will have exhaustivity=0)."
+                    f"No data available, creating grid with ALL "
+                    f"{len(expected_org_units)} expected ORG_UNITs "
+                    f"(all will have exhaustivity=0)."
                 )
         else:
             # No expected_org_units = use only org units present in extracted data
@@ -614,16 +656,26 @@ def compute_exhaustivity(
             if grid_rows:
                 expected_df = pl.DataFrame(grid_rows)
                 total_expected = len(expected_df)
+                avg_dx_uids = (
+                    sum(len(expected_dx_uids_by_coc.get(coc, [])) for coc in all_expected_cocs)
+                    / max(len(all_expected_cocs), 1)
+                )
                 logging.info(
-                    f"Creating complete grid: {len(expected_periods)} periods × {len(all_expected_cocs)} COCs × "
-                    f"{len(expected_org_units_list)} ORG_UNITs × avg {sum(len(expected_dx_uids_by_coc.get(coc, [])) for coc in all_expected_cocs) / max(len(all_expected_cocs), 1):.1f} DX_UIDs per COC = {total_expected} combinations"
+                    f"Creating complete grid: {len(expected_periods)} periods x "
+                    f"{len(all_expected_cocs)} COCs x {len(expected_org_units_list)} ORG_UNITs x "
+                    f"avg {avg_dx_uids:.1f} DX_UIDs per COC = {total_expected} combinations"
                 )
                 if excluded_new_org_unit_rows > 0:
                     safe_log_info(
-                        f"📍 Excluded {excluded_new_org_unit_rows} rows for {len(new_org_units_set)} new org units in historical periods (before {current_period})"
+                        f"📍 Excluded {excluded_new_org_unit_rows} rows for "
+                        f"{len(new_org_units_set)} new org units in historical periods "
+                        f"(before {current_period})"
                     )
             else:
-                logging.warning("No grid rows to create (expected_dx_uids_by_coc is empty or no COCs). Skipping complete grid.")
+                logging.warning(
+                    "No grid rows to create (expected_dx_uids_by_coc is empty "
+                    "or no COCs). Skipping complete grid."
+                )
         
         if expected_df is not None:
             if len(exhaustivity_df) > 0:
@@ -646,7 +698,11 @@ def compute_exhaustivity(
                 # Analyze what's missing
                 missing_periods = set(expected_periods) - set(periods_in_data)
                 missing_cocs = set(all_expected_cocs) - set(cocs_in_data)
-                missing_org_units = set(expected_org_units_list) - set(exhaustivity_df["ORG_UNIT"].unique().to_list() if len(exhaustivity_df) > 0 else [])
+                org_units_in_result = (
+                    exhaustivity_df["ORG_UNIT"].unique().to_list()
+                    if len(exhaustivity_df) > 0 else []
+                )
+                missing_org_units = set(expected_org_units_list) - set(org_units_in_result)
                 
                 # Log only significant missing items (periods, COCs)
                 if missing_periods:

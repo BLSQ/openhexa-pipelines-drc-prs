@@ -3,6 +3,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import requests
@@ -32,7 +33,9 @@ from utils import (
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
 
-def dhis2_request(session, method: str, url: str, **kwargs) -> dict:
+def dhis2_request(
+    session: requests.Session, method: str, url: str, **kwargs: Any
+) -> dict:
     """Make a request to DHIS2 API and return JSON response.
     
     Parameters
@@ -91,7 +94,12 @@ def dhis2_request(session, method: str, url: str, **kwargs) -> dict:
     default=False,
     help="Push data to target DHIS2. Set to True only for production runs.",
 )
-def dhis2_exhaustivity(run_ou_sync: bool, run_extract_data: bool, run_compute_data: bool, run_push_data: bool):
+def dhis2_exhaustivity(
+    run_ou_sync: bool,
+    run_extract_data: bool,
+    run_compute_data: bool,
+    run_push_data: bool,
+):
     """Extract data elements from the PRS DHIS2 instance.
 
     Compute the exhaustivity value based on required columns completeness.
@@ -160,7 +168,15 @@ def extract_data(
     pipeline_path: Path,
     run_task: bool = True,
 ) -> bool:
-    """Extracts data elements from the source DHIS2 instance and saves them in parquet format. Check with thomas for missing values"""
+    """Extract data elements from the source DHIS2 instance.
+
+    Saves them in parquet format.
+    
+    Returns
+    -------
+    bool
+        True if extraction completed successfully, False otherwise.
+    """
     if not run_task:
         current_run.log_info("Data elements extraction task skipped.")
         return True
@@ -188,7 +204,10 @@ def extract_data(
             end = datetime.now().strftime("%Y%m")
             config_enddate = config["EXTRACTION"].get("ENDDATE")
             if config_enddate:
-                current_run.log_info(f"ENDDATE in config ({config_enddate}) overridden by dynamic date: {end}")
+                current_run.log_info(
+                    f"ENDDATE in config ({config_enddate}) "
+                    f"overridden by dynamic date: {end}"
+                )
             
             # STARTDATE: Calculated from ENDDATE and MONTHS_WINDOW
             # Example: if MONTHS_WINDOW=3 and ENDDATE=202412, STARTDATE=202410 (3 months: Oct, Nov, Dec)
@@ -196,7 +215,10 @@ def extract_data(
             start = (end_date - relativedelta(months=extraction_window - 1)).strftime("%Y%m")
             config_startdate = config["EXTRACTION"].get("STARTDATE")
             if config_startdate:
-                current_run.log_info(f"STARTDATE in config ({config_startdate}) overridden by dynamic calculation: {start}")
+                current_run.log_info(
+                    f"STARTDATE in config ({config_startdate}) "
+                    f"overridden by dynamic calculation: {start}"
+                )
             
             current_run.log_info(
                 f"Using DYNAMIC_DATE mode: {start} to {end} ({extraction_window} months including current month)"
@@ -252,8 +274,8 @@ def handle_data_element_extracts(
     dhis2_extractor: DHIS2Extractor,
     data_element_extracts: list,
     extract_periods: list[str],
-    pipeline_config: dict = None,
-):
+    pipeline_config: dict | None = None,
+) -> None:
     """Handles data elements extracts based on the configuration."""
     if len(data_element_extracts) == 0:
         current_run.log_info("No data elements to extract.")
@@ -344,18 +366,28 @@ def handle_data_element_extracts(
                     output_dir=pipeline_path / "data" / "extracts" / folder_name,
                 )
                 if output_file is None:
-                    current_run.log_warning(f"Extract {extract_id} download returned None for period {period}. No file created.")
+                    current_run.log_warning(
+                        f"Extract {extract_id} download returned None "
+                        f"for period {period}. No file created."
+                    )
                 elif not output_file.exists():
-                    current_run.log_warning(f"Extract {extract_id} download returned path {output_file} but file does not exist for period {period}.")
+                    current_run.log_warning(
+                        f"Extract {extract_id} download returned path {output_file} "
+                        f"but file does not exist for period {period}."
+                    )
                 else:
-                    current_run.log_info(f"Extract {extract_id} successfully created file for period {period}: {output_file}")
+                    current_run.log_info(
+                        f"Extract {extract_id} successfully created file "
+                        f"for period {period}: {output_file}"
+                    )
 
             except Exception as e:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 # Log more details about the error
                 current_run.log_warning(
-                    f"Extract {extract_id} download failed for period {period} ({error_type}): {error_msg[:200]}. Continuing with next period."
+                    f"Extract {extract_id} download failed for period {period} "
+                    f"({error_type}): {error_msg[:200]}. Continuing with next period."
                 )
                 logging.error(f"Extract {extract_id} - period {period} error ({error_type}): {e!s}")
                 # Log full traceback for debugging
@@ -397,9 +429,14 @@ def compute_exhaustivity_data(
     pipeline_path: Path,
     run_task: bool = True,
     wait: bool = True,
-    new_org_units: dict = None,
+    new_org_units: dict | None = None,
 ) -> bool:
-    """Computes exhaustivity from extracted data and saves the result to processed/ folder.
+    """Compute exhaustivity from extracted data and save the result to processed/ folder.
+    
+    Returns
+    -------
+    bool
+        True if computation completed successfully, False otherwise.
     
     Parameters
     ----------
@@ -460,7 +497,10 @@ def compute_exhaustivity_data(
     exhaustivity_periods = get_periods(start, end)
     current_period = end  # Current period = most recent (e.g., 202512)
     
-    current_run.log_info(f"Processing {len(config.get('EXTRACTS', []))} extracts for {len(exhaustivity_periods)} periods")
+    current_run.log_info(
+        f"Processing {len(config.get('EXTRACTS', []))} extracts "
+        f"for {len(exhaustivity_periods)} periods"
+    )
     if new_org_units:
         current_run.log_info(f"📍 New org units detected - will only count from period {current_period} onwards")
     
@@ -471,7 +511,10 @@ def compute_exhaustivity_data(
         # Get new org units for this specific extract
         extract_new_org_units = new_org_units.get(extract_id, [])
         if extract_new_org_units:
-            current_run.log_info(f"📍 {len(extract_new_org_units)} new org units for '{extract_id}' - excluded from periods before {current_period}")
+            current_run.log_info(
+                f"📍 {len(extract_new_org_units)} new org units for '{extract_id}' "
+                f"- excluded from periods before {current_period}"
+            )
         
         try:
             compute_exhaustivity_and_queue(
@@ -502,10 +545,15 @@ def compute_exhaustivity_and_queue(
     extract_id: str,
     exhaustivity_periods: list[str],
     push_queue: Queue,
-    new_org_units: list[str] = None,
-    current_period: str = None,
+    new_org_units: list[str] | None = None,
+    current_period: str | None = None,
 ) -> bool:
-    """Computes exhaustivity from extracted data and saves the result to processed/ folder.
+    """Compute exhaustivity from extracted data and save the result to processed/ folder.
+    
+    Returns
+    -------
+    bool
+        True if computation completed successfully, False otherwise.
 
     Parameters
     ----------
@@ -570,7 +618,9 @@ def compute_exhaustivity_and_queue(
         # Get org units from SOURCE_DATASET_UID (REQUIRED - no fallback)
         source_dataset_uid = extract_config_item.get("SOURCE_DATASET_UID")
         if not source_dataset_uid:
-            raise ValueError(f"No SOURCE_DATASET_UID defined for extract: {extract_id}")
+            raise ValueError(
+                f"No SOURCE_DATASET_UID defined for extract: {extract_id}"
+            )
         
         try:
             # Use SOURCE_DHIS2 to retrieve org units from SOURCE_DATASET_UID
@@ -583,9 +633,15 @@ def compute_exhaustivity_and_queue(
                 raise ValueError(f"Source dataset {source_dataset_uid} not found in DHIS2")
             
             expected_org_units = source_dataset["organisation_units"].explode().to_list()
-            current_run.log_info(f"Retrieved {len(expected_org_units)} org units from SOURCE_DATASET_UID {source_dataset_uid}")
+            current_run.log_info(
+                f"Retrieved {len(expected_org_units)} org units "
+                f"from SOURCE_DATASET_UID {source_dataset_uid}"
+            )
         except Exception as e:
-            error_msg = f"Failed to retrieve org units from SOURCE_DATASET_UID {source_dataset_uid} for extract {extract_id}: {e!s}"
+            error_msg = (
+                f"Failed to retrieve org units from SOURCE_DATASET_UID "
+                f"{source_dataset_uid} for extract {extract_id}: {e!s}"
+            )
             current_run.log_error(error_msg)
             logging.error(error_msg)
             raise RuntimeError(error_msg) from e
@@ -670,7 +726,9 @@ def compute_exhaustivity_and_queue(
             # Clean log with only essential info
             current_run.log_info(
                 f"📊 Period {period}: {num_org_units} ORG_UNITs, {percentage_1:.1f}% exhaustivity | "
-                f"COCs: {coc_count_1_total} complètes (1), {coc_count_0_total} incomplètes (0) = {coc_percentage:.1f}% complètes"
+                f"COCs: {coc_count_1_total} complètes (1), "
+                f"{coc_count_0_total} incomplètes (0) = "
+                f"{coc_percentage:.1f}% complètes"
             )
         except Exception as e:
             current_run.log_error(f"❌ Error saving exhaustivity data for {extract_id} - period {period}: {e!s}")
@@ -805,7 +863,13 @@ def push_data(
     run_task: bool = True,
     wait: bool = True,
 ) -> bool:
-    """Pushes data elements to the target DHIS2 instance."""
+    """Push data elements to the target DHIS2 instance.
+    
+    Returns
+    -------
+    bool
+        True if push completed successfully, False otherwise.
+    """
     if not run_task:
         current_run.log_info("Data push task skipped.")
         return True
@@ -862,14 +926,20 @@ def push_data(
             break
 
         if not next_item:
-            current_run.log_info(f"Push data process: waiting for exhaustivity files to be computed... (queue empty, {queue_count} items)")
+            current_run.log_info(
+                f"Push data process: waiting for exhaustivity files to be computed... "
+                f"(queue empty, {queue_count} items)"
+            )
             # Queue SQLite handles synchronization between processes
             # Check periodically for new items
             time.sleep(60 * int(push_wait))
             continue
         
         # Log what we found in the queue
-        current_run.log_info(f"🔍 Found item in queue: {next_item[:100]}... (queue has {queue_count} items)")
+        current_run.log_info(
+            f"🔍 Found item in queue: {next_item[:100]}... "
+            f"(queue has {queue_count} items)"
+        )
 
         try:
             # Check if this is an extract complete marker
@@ -879,7 +949,10 @@ def push_data(
                 push_queue.dequeue()  # remove marker
                 # If we have files collected for this extract, process them now
                 if extract_id in extract_files_collected and len(extract_files_collected[extract_id]) > 0:
-                    current_run.log_info(f"📦 Extract {extract_id} complete, processing {len(extract_files_collected[extract_id])} file(s)")
+                    current_run.log_info(
+                        f"📦 Extract {extract_id} complete, processing "
+                        f"{len(extract_files_collected[extract_id])} file(s)"
+                    )
                     # Process all files for this extract (concatenate and push)
                     process_extract_files(
                         extract_id=extract_id,
@@ -925,8 +998,8 @@ def process_extract_files(
     extract_id: str,
     file_paths: list[Path],
     pipeline_config: dict,
-    pusher,
-    dhis2_client,
+    pusher: DHIS2Pusher,  # type: ignore[type-arg]
+    dhis2_client: DHIS2,
 ) -> None:
     """Process all files for an extract by concatenating them before pushing.
     
@@ -1065,17 +1138,30 @@ def split_on_pipe(s: str) -> tuple[str, str | None]:
     return None, parts[0]
 
 
-def filter_by_dataset_org_units(dhis2_client: DHIS2, data: pl.DataFrame, dataset_id: str) -> pl.DataFrame:
-    """Filters the provided data to include only rows with organisation units present in the specified DHIS2 dataset.
+def filter_by_dataset_org_units(
+    dhis2_client: DHIS2, data: pl.DataFrame, dataset_id: str
+) -> pl.DataFrame:
+    """Filter data to include only rows with org units in the specified dataset.
+    
+    Returns
+    -------
+    pl.DataFrame
+        Filtered DataFrame containing only rows with ORG_UNITs present in the dataset.
     """
     url = f"{dhis2_client.api.url}/dataSets/{dataset_id}"
     try:
         dataset_payload = dhis2_request(dhis2_client.api.session, "get", url)
     except requests.exceptions.RequestException as e:
-        current_run.log_warning(f"Network/HTTP error during payload fetch for dataset {dataset_id} alignment: {e!s}. Returning original data.")
+        current_run.log_warning(
+            f"Network/HTTP error during payload fetch for dataset {dataset_id} "
+            f"alignment: {e!s}. Returning original data."
+        )
         return data
     except Exception as e:
-        current_run.log_warning(f"Unexpected error during payload fetch for dataset {dataset_id} alignment: {e!s}. Returning original data.")
+        current_run.log_warning(
+            f"Unexpected error during payload fetch for dataset {dataset_id} "
+            f"alignment: {e!s}. Returning original data."
+        )
         return data
 
     ds_uids = [ou["id"] for ou in dataset_payload.get("organisationUnits", [])]
