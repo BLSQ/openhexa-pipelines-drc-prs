@@ -838,8 +838,10 @@ def push_dataset_org_units(
     if "error" in dataset_payload:
         return dataset_payload
 
-    # Step 2: Update organisationUnits (just push the source OUs)
-    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in source_ous]
+    # Step 2: Update organisationUnits (additive: keep existing + add new ones. Additive logic instead of replaciing)
+    # Combine existing target org units with source org units (union)
+    combined_ous = list(set(target_ous) | set(source_ous))
+    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in combined_ous]
 
     # Step 3: PUT updated dataset
     update_response = dhis2_request(
@@ -850,7 +852,10 @@ def push_dataset_org_units(
         current_run.log_info(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
         logging.error(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
     else:
-        msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: {len(source_ous)}"
+        msg = (
+            f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: "
+            f"{len(target_ous)} existing + {len(new_org_units)} new = {len(combined_ous)} total"
+        )
         current_run.log_info(msg)
         logging.info(msg)
 
