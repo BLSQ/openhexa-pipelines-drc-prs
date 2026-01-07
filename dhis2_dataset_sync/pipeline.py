@@ -1142,7 +1142,7 @@ def handle_dataset_completion(
             org_units=org_units_to_sync,
             parent_ou=province_uids,
             period=period,
-            logging_interval=4000,            
+            logging_interval=4000,
             ds_processed_path=ds_processed,
         )
     except Exception as e:

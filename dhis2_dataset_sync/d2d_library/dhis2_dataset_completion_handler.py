@@ -129,18 +129,17 @@ class DatasetCompletionSync:
         finally:
             self._process_response(ds=dataset_id, pe=period, ou=org_unit, response=response)
 
-    def _try_build_source_completion_table(
-        self, org_units: list[str], dataset_id: str, period: str
-    ) -> None:
+    def _try_build_source_completion_table(self, org_units: list[str], dataset_id: str, period: str) -> None:
         """Build a completion status table for all organisation units provided.
+
         Args:
             org_units: List of organisation unit IDs to fetch completion status for (NOTE: use OU parents).
             dataset_id: The dataset ID to fetch completion status for.
-            period: The period for which to fetch the completion status.        
-        """        
+            period: The period for which to fetch the completion status.
+        """
         if not org_units:
-            return  
-              
+            return
+
         completion_statuses = []
         for ou in org_units:
             completion = self._fetch_completion_status_from_source(
@@ -172,7 +171,7 @@ class DatasetCompletionSync:
         org_units: list[str] | None,
         parent_ou: list[str] | None,
         period: list[str],
-        logging_interval: int = 2000, 
+        logging_interval: int = 2000,
         ds_processed_path: Path | None = None,
     ) -> None:
         """Sync completion status between datasets.
@@ -181,8 +180,8 @@ class DatasetCompletionSync:
         target_dataset_id: The dataset ID in the target DHIS2 instance.
         org_units: List of organisation unit IDs to sync.
         parent_ou: List of parent organisation unit IDs to build completion table (if None, no table built).
-        period: The period for which to sync the completion status.        
-        logging_interval: Interval for logging progress (defaults to 2000).        
+        period: The period for which to sync the completion status.
+        logging_interval: Interval for logging progress (defaults to 2000).
         ds_processed_path: Path to save processed org units (if None, no file saving nor comparison).
         """
         self._reset_import_summary()
@@ -207,9 +206,7 @@ class DatasetCompletionSync:
         current_run.log_info(msg)
         self.logger.info(msg)
 
-        self._try_build_source_completion_table(
-            org_units=parent_ou, dataset_id=source_dataset_id, period=period
-        )
+        self._try_build_source_completion_table(org_units=parent_ou, dataset_id=source_dataset_id, period=period)
 
         try:
             processed = []
@@ -308,7 +305,7 @@ class DatasetCompletionSync:
         if msg:
             current_run.log_info(msg)
             self.logger.info(msg)
- 
+
     def _log_summary(self, org_units: list, period: str) -> None:
         msg = (
             f"Dataset completion for period {period} summary: {self.import_summary['import_counts']} "
