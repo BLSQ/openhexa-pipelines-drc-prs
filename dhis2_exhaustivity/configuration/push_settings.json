@@ -1,0 +1,7 @@
+{
+    "IMPORT_STRATEGY": "CREATE_AND_UPDATE",
+    "DRY_RUN": true,
+    "MAX_POST": 10000,
+    "PUSH_WAIT_MINUTES": 5
+}
+

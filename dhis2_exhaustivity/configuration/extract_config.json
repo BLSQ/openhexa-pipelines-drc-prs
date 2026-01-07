@@ -1,0 +1,31 @@
+{
+    "CONNECTIONS": {
+        "SOURCE_DHIS2": "drc-prs",
+        "TARGET_DHIS2": "drc-prs"
+    },
+    "EXTRACTION": {
+        "DYNAMIC_DATE": true,
+        "MONTHS_WINDOW": 4,
+        "STARTDATE": "202509",
+        "ENDDATE": "202512",
+        "MODE": "DOWNLOAD_REPLACE"
+    },
+    "EXTRACTS": [
+        {
+            "EXTRACT_ID": "Fosa_exhaustivity_data_elements",
+            "DRUG_MAPPING_FILE": "drug_mapping_fosa.json",
+            "SOURCE_DATASET_UID": "wMCnDAQfGZN",
+            "TARGET_DATASET_UID": "z774dF9QToi",
+            "TARGET_DATA_ELEMENT_UID": "kaxgZZLAwGf",
+            "FREQUENCY": "MONTHLY"
+        },
+        {
+            "EXTRACT_ID": "BCZ_exhaustivity_data_elements",
+            "DRUG_MAPPING_FILE": "drug_mapping_bcz.json",
+            "SOURCE_DATASET_UID": "Om2WgL4TNEy",
+            "TARGET_DATASET_UID": "xrNLUayA875",
+            "TARGET_DATA_ELEMENT_UID": "tRMSUzNvN8e",
+            "FREQUENCY": "MONTHLY"
+        }
+    ]
+}
