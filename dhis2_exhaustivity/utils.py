@@ -34,7 +34,7 @@ def connect_to_dhis2(connection_str: str, cache_dir: Path) -> DHIS2:
         if cache_dir:
             cache_dir.mkdir(parents=True, exist_ok=True)
         dhis2_client = DHIS2(connection=connection, cache_dir=cache_dir)
-        current_run.log_info(f"Connected to DHIS2 connection: {connection.url}")
+        # Connection is implicit - no need to log every time
         return dhis2_client
     except Exception as e:
         raise Exception(f"Error while connecting to DHIS2 {connection_str}: {e}") from e
@@ -65,7 +65,7 @@ def load_pipeline_config(config_dir: Path) -> dict:
     else:
         config["PUSH_SETTINGS"] = {}
     
-    current_run.log_info(f"Config loaded from {config_dir}.")
+    # Config loading is implicit - no need to log every time
     return config
 
 

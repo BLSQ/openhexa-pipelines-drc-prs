@@ -178,9 +178,10 @@ class DHIS2Pusher:
 
             processed_points += len(chunk)
 
-            # Log every logging_interval points
+            # Log progress only at significant milestones (every logging_interval points)
+            # Use logging.info instead of current_run.log_info to reduce verbosity in OpenHexa UI
             if processed_points // logging_interval > (processed_points - len(chunk)) // logging_interval:
-                current_run.log_info(
+                logger.info(
                     f"{processed_points} / {total_data_points} data points pushed summary: {summary['import_counts']}"
                 )
 

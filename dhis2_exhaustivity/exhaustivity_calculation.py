@@ -128,8 +128,6 @@ def compute_exhaustivity(
         extracts_folder = extracts_base / f"Extract {extract_id}"
     
     try:
-        safe_log_info(f"Computing exhaustivity for extract: {extract_id}")
-        
         files_to_read = {
             p: (extracts_folder / f"data_{p}.parquet") if (extracts_folder / f"data_{p}.parquet").exists() else None
             for p in periods
@@ -152,12 +150,12 @@ def compute_exhaustivity(
             })
         else:
             if missing_extracts:
-                safe_log_warning(
-                    f"Expected {len(periods)} parquet files for exhaustivity computation, "
-                    f"but missing files for periods: {missing_extracts}. "
+                safe_log_info(
+                    f"ℹ️  Expected {len(periods)} parquet files, but {len(missing_extracts)} period(s) have no data in DHIS2: "
+                    f"{sorted(missing_extracts)}. "
                     f"Computing exhaustivity with available {len(periods) - len(missing_extracts)} period(s). "
-                    f"Missing periods will be filled with exhaustivity=0 in the complete grid."
-            )
+                    f"Missing periods will be filled with exhaustivity=0 (normal if data doesn't exist yet in DHIS2)."
+                )
         
         try:
             available_files = [f for f in files_to_read.values() if f is not None]
@@ -572,6 +570,11 @@ def compute_exhaustivity(
         periods_in_data = exhaustivity_df["PERIOD"].unique().to_list() if len(exhaustivity_df) > 0 else []
         cocs_in_data = exhaustivity_df["CATEGORY_OPTION_COMBO"].unique().to_list() if len(exhaustivity_df) > 0 else []
         
+        # Track which periods had missing parquet files (no data in DHIS2)
+        # This helps us avoid redundant warnings later
+        # missing_extracts is defined earlier in the function (line 137)
+        periods_with_missing_files = set(missing_extracts)
+        
         # Use ALL COCs from push_config (not just those in data)
         # This ensures we detect missing COCs even if they have no data
         # Priority: 1) push_config mappings, 2) COCs in data
@@ -704,11 +707,25 @@ def compute_exhaustivity(
                 )
                 missing_org_units = set(expected_org_units_list) - set(org_units_in_result)
                 
-                # Log only significant missing items (periods, COCs)
-                if missing_periods:
-                    current_run.log_warning(f"Missing {len(missing_periods)} period(s): {list(missing_periods)}")
+                # Only warn about periods that have parquet files but no data
+                # (periods without parquet files are already logged earlier as "missing files")
+                periods_with_files_but_no_data = missing_periods - periods_with_missing_files
+                if periods_with_files_but_no_data:
+                    safe_log_warning(
+                        f"⚠️  {len(periods_with_files_but_no_data)} period(s) have parquet files but no data: "
+                        f"{sorted(list(periods_with_files_but_no_data))}"
+                    )
+                elif missing_periods:
+                    # Periods without parquet files (no data in DHIS2) - this is normal
+                    safe_log_info(
+                        f"ℹ️  {len(missing_periods)} period(s) have no data in DHIS2 "
+                        f"(no parquet files created): {sorted(list(missing_periods))}. "
+                        f"This is normal if data doesn't exist yet in DHIS2."
+                    )
+                
+                # Only warn about COCs if they're expected but completely missing
                 if missing_cocs:
-                    current_run.log_warning(f"Missing {len(missing_cocs)} COC(s) (no data)")
+                    safe_log_warning(f"Missing {len(missing_cocs)} COC(s) (no data in any period)")
             
             exhaustivity_df = complete_exhaustivity
         else:
@@ -729,5 +746,3 @@ def compute_exhaustivity(
         logging.error(f"Exhaustivity computation error: {e!s}")
         current_run.log_error(f"Error computing exhaustivity: {e!s}")
         raise
-    finally:
-        current_run.log_info("Exhaustivity computation finished.")

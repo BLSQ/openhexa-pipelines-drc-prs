@@ -935,11 +935,8 @@ def push_data(
             time.sleep(60 * int(push_wait))
             continue
         
-        # Log what we found in the queue
-        current_run.log_info(
-            f"🔍 Found item in queue: {next_item[:100]}... "
-            f"(queue has {queue_count} items)"
-        )
+        # Log queue status only when queue count changes significantly or when processing extract complete markers
+        # Skip verbose logging for individual file items
 
         try:
             # Check if this is an extract complete marker

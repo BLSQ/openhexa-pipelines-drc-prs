@@ -66,12 +66,12 @@ class AnanalyticsDataElementExtractor:
                 org_units=org_units,
                 include_cocs=True,
             )
-            current_run.log_info(f"Analytics API returned {len(response) if isinstance(response, list) else 'non-list'} items")
+            df_response = pl.DataFrame(response)
+            # Log only if data is retrieved (skip verbose logging for empty responses)
+            if len(df_response) > 0:
+                current_run.log_info(f"Retrieved {len(df_response)} rows for period {period}")
         except Exception as e:
             raise Exception(f"Error retrieving data elements data: {e}") from e
-
-        df_response = pl.DataFrame(response)
-        current_run.log_info(f"Converted to DataFrame: {len(df_response)} rows")
         return self._map_to_dhis2_format_analytics(df_response)
 
     def _map_to_dhis2_format_analytics(
@@ -379,10 +379,8 @@ class DHIS2Extractor:
             current_run.log_info(f"Nothing to save for period {period}.")
             return None
 
-        # Check if DataFrame is empty
-        if raw_data.is_empty():
-            current_run.log_info(f"Empty DataFrame retrieved for period {period}. Saving empty file with schema.")
-            # Still save empty DataFrame to have a trace file
+        # Check if DataFrame is empty (still save empty DataFrame to have a trace file)
+        # No need to log empty dataframes - this is expected for periods without data
 
         if extract_fname.exists():
             current_run.log_info(f"Replacing extract for period {period}.")
