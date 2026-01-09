@@ -1,6 +1,2 @@
-pandas
-polars
-requests
-python-dateutil
 openhexa.toolbox
 openhexa.sdk

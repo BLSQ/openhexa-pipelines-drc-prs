@@ -7,6 +7,7 @@ from typing import Any
 
 import polars as pl
 import requests
+from requests.exceptions import HTTPError, RequestException
 from config_sync import sync_configs_from_drug_mapping
 from d2d_library.db_queue import Queue
 from d2d_library.dhis2_extract_handlers import DHIS2Extractor
@@ -33,34 +34,40 @@ from utils import (
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
 
-def dhis2_request(
-    session: requests.Session, method: str, url: str, **kwargs: Any
-) -> dict:
-    """Make a request to DHIS2 API and return JSON response.
-    
+def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: Any) -> dict:
+    """Wrapper around requests to handle DHIS2 GET/PUT with error handling.
+
     Parameters
     ----------
     session : requests.Session
-        The session object to use for the request.
+        Session object used to perform requests.
     method : str
-        HTTP method (get, post, put, delete).
+        HTTP method: 'get' or 'put'.
     url : str
-        The URL to request.
-    **kwargs : dict
-        Additional arguments to pass to the request.
-        
+        Full URL for the request.
+    **kwargs
+        Additional arguments for session.request (json, params, etc.)
+
     Returns
     -------
     dict
-        JSON response from the API, or error dict if request fails.
+        Either the response JSON or an error payload with 'error' and 'status_code'.
     """
     try:
-        response = getattr(session, method.lower())(url, **kwargs)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"DHIS2 request failed: {e}")
-        return {"error": str(e)}
+        r = session.request(method, url, **kwargs)
+        r.raise_for_status()
+        return r.json()
+    except HTTPError as e:
+        try:
+            return {
+                "error": f"HTTP error during {method.upper()} {e} status_code: {r.status_code} response: {r.json()}"
+            }
+        except Exception:
+            return {"error": f"HTTP error during {method.upper()} {e} status_code: {r.status_code}"}
+    except RequestException as e:
+        return {"error": f"Request error during {method.upper()} {url}: {e}"}
+    except Exception as e:
+        return {"error": f"Unexpected error during {method.upper()} {url}: {e}"}
 
 
 # extract data from source DHIS2
@@ -838,10 +845,8 @@ def push_dataset_org_units(
     if "error" in dataset_payload:
         return dataset_payload
 
-    # Step 2: Update organisationUnits (additive: keep existing + add new ones. Additive logic instead of replaciing)
-    # Combine existing target org units with source org units (union)
-    combined_ous = list(set(target_ous) | set(source_ous))
-    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in combined_ous]
+    # Step 2: Update organisationUnits (just push the source OUs)
+    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in source_ous]
 
     # Step 3: PUT updated dataset
     update_response = dhis2_request(
@@ -852,10 +857,7 @@ def push_dataset_org_units(
         current_run.log_info(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
         logging.error(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
     else:
-        msg = (
-            f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: "
-            f"{len(target_ous)} existing + {len(new_org_units)} new = {len(combined_ous)} total"
-        )
+        msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: {len(source_ous)}"
         current_run.log_info(msg)
         logging.info(msg)
 
