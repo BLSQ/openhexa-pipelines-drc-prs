@@ -1,9 +1,13 @@
 """
-Configuration synchronization module.
+Configuration synchronization module (DEPRECATED).
 
-With the new pipeline_config.json structure, UIDs are loaded dynamically from
-drug_mapping files at runtime. This module now only validates that the drug_mapping
-files exist and are valid.
+NOTE: The main validation function has been moved to utils.py as `validate_drug_mapping_files()`.
+This module is kept for backwards compatibility only.
+
+The new function in utils.py:
+- Uses current_run.log_* instead of print() (visible in OpenHexa UI)
+- Raises errors instead of just logging warnings (stops pipeline on invalid config)
+- Better error handling and validation
 """
 
 import json
@@ -11,15 +15,38 @@ from pathlib import Path
 
 try:
     from openhexa.sdk.workspaces import workspace
-    from openhexa.sdk import current_run
-    def log_info(msg): current_run.log_info(msg)
-    def log_warning(msg): current_run.log_warning(msg)
-    def log_error(msg): current_run.log_error(msg)
 except ImportError:
     workspace = None
-    def log_info(msg): print(f"[INFO] {msg}")
-    def log_warning(msg): print(f"[WARNING] {msg}")
-    def log_error(msg): print(f"[ERROR] {msg}")
+
+# Use the unified logging function from utils
+try:
+    from utils import log_msg
+    def log_info(msg: str) -> None:
+        log_msg(msg, level="info", logger_name="config_sync")
+    def log_warning(msg: str) -> None:
+        log_msg(msg, level="warning", logger_name="config_sync")
+    def log_error(msg: str) -> None:
+        log_msg(msg, level="error", logger_name="config_sync")
+except ImportError:
+    # Fallback if utils is not available (shouldn't happen in normal usage)
+    import logging
+    _logger = logging.getLogger("config_sync")
+    def log_info(msg: str) -> None:
+        _logger.info(msg)
+    def log_warning(msg: str) -> None:
+        _logger.warning(msg)
+    def log_error(msg: str) -> None:
+        _logger.error(msg)
+
+# Import load_configuration from utils to avoid hardcoding file loading
+try:
+    from utils import load_configuration
+except ImportError:
+    # Fallback if utils is not available
+    def load_configuration(config_path: Path) -> dict:
+        """Fallback load_configuration if utils is not available."""
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
 
 def load_uids_from_drug_mapping(mapping_path: Path) -> list[str]:
@@ -70,8 +97,8 @@ def sync_configs_from_drug_mapping(pipeline_path: Path = None) -> dict:
         log_warning(f"extract_config.json not found: {extract_config_path}")
         return {}
     
-    with open(extract_config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    # Use load_configuration instead of hardcoding json.load
+    config = load_configuration(extract_config_path)
     
     log_info("Validating drug_mapping files...")
     
@@ -106,8 +133,21 @@ sync_configs_from_csv = sync_configs_from_drug_mapping
 
 
 if __name__ == "__main__":
+    # Use unified logging function
+    try:
+        from utils import log_msg
+    except ImportError:
+        import logging
+        _logger = logging.getLogger("config_sync")
+        def log_msg(msg: str, level: str = "info", **kwargs) -> None:
+            getattr(_logger, level.lower())(msg)
+    
     result = sync_configs_from_drug_mapping(Path(__file__).parent)
-    print("\nResult:")
+    log_msg("\nResult:", level="info", logger_name="config_sync")
     for extract_id, data in result.items():
         status = "OK" if data["valid"] else "INVALID"
-        print(f"  {extract_id}: {data['uids_count']} UIDs ({status})")
+        log_msg(
+            f"  {extract_id}: {data['uids_count']} UIDs ({status})",
+            level="info",
+            logger_name="config_sync"
+        )

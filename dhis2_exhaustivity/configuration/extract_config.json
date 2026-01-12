@@ -4,7 +4,6 @@
         "TARGET_DHIS2": "drc-prs"
     },
     "EXTRACTION": {
-        "DYNAMIC_DATE": true,
         "MONTHS_WINDOW": 4,
         "STARTDATE": "202509",
         "ENDDATE": "202512",
@@ -17,6 +16,27 @@
             "SOURCE_DATASET_UID": "wMCnDAQfGZN",
             "TARGET_DATASET_UID": "z774dF9QToi",
             "TARGET_DATA_ELEMENT_UID": "kaxgZZLAwGf",
+            "UIDS": [
+                "a0i3MXpBmhT",
+                "b0f8cOW1CFV",
+                "bdy45DCTJLB",
+                "c5nKAODeM8D",
+                "cbuwM5uOq3O",
+                "ccpDQ5umc0a",
+                "eKHjiGzfBep",
+                "EwiHKw8P2xz",
+                "fHyOLs6mPEr",
+                "FVJ2v5RgBgL",
+                "hgjnpRWXunB",
+                "imqSmhfQTPN",
+                "jlRZE5tTARe",
+                "pScfYi2Qxop",
+                "PLjvTAvttMR",
+                "PlYGakAhqbk",
+                "S007ecRnpvZ",
+                "vtqAD1gqMxx",
+                "Xt48UQAZppa"
+            ],
             "FREQUENCY": "MONTHLY"
         },
         {
@@ -25,6 +45,32 @@
             "SOURCE_DATASET_UID": "Om2WgL4TNEy",
             "TARGET_DATASET_UID": "xrNLUayA875",
             "TARGET_DATA_ELEMENT_UID": "tRMSUzNvN8e",
+            "UIDS": [
+                "BNYzDZBVOBP",
+                "b5mg2cVtm48",
+                "cDt1Gbikf0v",
+                "DCJfRc1TpAR",
+                "f2Pr76MxXTD",
+                "GShJaKnBvS2",
+                "H77RuaEGD17",
+                "hZ0CgqXx3cP",
+                "jZPX3DsHu6F",
+                "krGXf8iXGUw",
+                "liobbb5SRzR",
+                "plLLbVoJwqK",
+                "pn2lSDlGU8S",
+                "PXSRmMNZnpM",
+                "qps2qV8Nk8a",
+                "QxeCkZVPmZ4",
+                "rlTM9yH1Vr9",
+                "sxW2NlrUJBF",
+                "tHs2Xe7T5em",
+                "tIeOHye5rzh",
+                "WH4cMQHfCT8",
+                "Y06LJgRiqvf",
+                "zrVpZBnRhui",
+                "zuCnFYZizYX"
+            ],
             "FREQUENCY": "MONTHLY"
         }
     ]

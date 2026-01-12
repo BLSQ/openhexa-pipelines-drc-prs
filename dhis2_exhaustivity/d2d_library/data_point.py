@@ -7,12 +7,15 @@ class DataPoint:
         Parameters
         ----------
         row : dict
-            Dictionary with keys: ['DX_UID', 'PERIOD', 'ORG_UNIT', 'VALUE']
+            Dictionary with keys: ['DX_UID', 'PERIOD', 'ORG_UNIT', 'VALUE',
+            'CATEGORY_OPTION_COMBO', 'ATTRIBUTE_OPTION_COMBO']
         """
         self.dataElement = row.get("DX_UID")
         self.period = row.get("PERIOD")
         self.orgUnit = row.get("ORG_UNIT")
         self.value = row.get("VALUE")
+        self.categoryOptionCombo = row.get("CATEGORY_OPTION_COMBO")
+        self.attributeOptionCombo = row.get("ATTRIBUTE_OPTION_COMBO")
 
     def to_json(self) -> dict:
         """Return a dictionary representation of the data point suitable for DHIS2 JSON format.
@@ -26,6 +29,8 @@ class DataPoint:
             "dataElement": self.dataElement,
             "period": self.period,
             "orgUnit": self.orgUnit,
+            "categoryOptionCombo": self.categoryOptionCombo,
+            "attributeOptionCombo": self.attributeOptionCombo,
             "value": self.value,
         }
 
@@ -41,13 +46,15 @@ class DataPoint:
             "dataElement": self.dataElement,
             "period": self.period,
             "orgUnit": self.orgUnit,
+            "categoryOptionCombo": self.categoryOptionCombo,
+            "attributeOptionCombo": self.attributeOptionCombo,
             "value": "",
             "comment": "deleted value",
         }
 
     def _check_attributes(self, exclude_value: bool = False) -> bool:
         """Check if mandatory attributes are not None."""
-        attributes = [self.dataElement, self.period, self.orgUnit]
+        attributes = [self.dataElement, self.period, self.orgUnit, self.categoryOptionCombo, self.attributeOptionCombo]
         if not exclude_value:
             attributes.append(self.value)
         return all(attr is not None for attr in attributes)
