@@ -1,0 +1,195 @@
+{
+    "Artemether + Luméfantrine, 20mg + 120mg, 6 Tablets dispersible": {
+        "stock_entry_bcz": {"UID": "BNYzDZBVOBP", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "BNYzDZBVOBP", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "BNYzDZBVOBP", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "BNYzDZBVOBP", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "dreVtvRayev", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "BNYzDZBVOBP", "COC": "mcCtxO7bWz6"}
+    },
+    "Artemether + Luméfantrine, 20mg + 120mg, 12 Tablets dispersible": {
+        "stock_entry_bcz": {"UID": "sxW2NlrUJBF", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "sxW2NlrUJBF", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "sxW2NlrUJBF", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "sxW2NlrUJBF", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "MFcy5dErsKR", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "sxW2NlrUJBF", "COC": "mcCtxO7bWz6"}
+    },
+    "Artemether + Luméfantrine, 20mg + 120mg, 18 Tablets dispersible": {
+        "stock_entry_bcz": {"UID": "plLLbVoJwqK", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "plLLbVoJwqK", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "plLLbVoJwqK", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "plLLbVoJwqK", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "zaiAVQPuWq0", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "plLLbVoJwqK", "COC": "mcCtxO7bWz6"}
+    },
+    "Artemether + Luméfantrine, 20mg + 120mg, 24 Tablets": {
+        "stock_entry_bcz": {"UID": "tHs2Xe7T5em", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "tHs2Xe7T5em", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "tHs2Xe7T5em", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "tHs2Xe7T5em", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "n80TxzWLDPb", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "tHs2Xe7T5em", "COC": "mcCtxO7bWz6"}
+    },
+    "Artésunate, 100mg, suppositoire": {
+        "stock_entry_bcz": {"UID": "DCJfRc1TpAR", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "DCJfRc1TpAR", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "DCJfRc1TpAR", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "DCJfRc1TpAR", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "mb3efHxtzZS", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "DCJfRc1TpAR", "COC": "mcCtxO7bWz6"}
+    },
+    "Artésunate, 200mg, suppositoire": {
+        "stock_entry_bcz": {"UID": "pn2lSDlGU8S", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "pn2lSDlGU8S", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "pn2lSDlGU8S", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "pn2lSDlGU8S", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "Qa1IAZbh7DD", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "pn2lSDlGU8S", "COC": "mcCtxO7bWz6"}
+    },
+    "Artésunate, 60mg, Injectable": {
+        "stock_entry_bcz": {"UID": "liobbb5SRzR", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "liobbb5SRzR", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "liobbb5SRzR", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "liobbb5SRzR", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "pNeg6QS6VUA", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "liobbb5SRzR", "COC": "mcCtxO7bWz6"}
+    },
+    "Artésunate, 120mg, Injectable": {
+        "stock_entry_bcz": {"UID": "qps2qV8Nk8a", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "qps2qV8Nk8a", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "qps2qV8Nk8a", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "qps2qV8Nk8a", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "r8OFvnKvD27", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "qps2qV8Nk8a", "COC": "mcCtxO7bWz6"}
+    },
+    "Artesunate + Amodiaquine, 25mg + 67.5mg": {
+        "stock_entry_bcz": {"UID": "hZ0CgqXx3cP", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "hZ0CgqXx3cP", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "hZ0CgqXx3cP", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "hZ0CgqXx3cP", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "fCIOudKy6LP", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "hZ0CgqXx3cP", "COC": "mcCtxO7bWz6"}
+    },
+    "Artesunate + Amodiaquine, 50mg + 135mg, Tablets": {
+        "stock_entry_bcz": {"UID": "tIeOHye5rzh", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "tIeOHye5rzh", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "tIeOHye5rzh", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "tIeOHye5rzh", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "s1MmwpwLWa3", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "tIeOHye5rzh", "COC": "mcCtxO7bWz6"}
+    },
+    "Artesunate + Amodiaquine, 100mg + 270mg, Tablets, 6-13 ans": {
+        "stock_entry_bcz": {"UID": "QxeCkZVPmZ4", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "QxeCkZVPmZ4", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "QxeCkZVPmZ4", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "QxeCkZVPmZ4", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "SqGR1jQAA83", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "QxeCkZVPmZ4", "COC": "mcCtxO7bWz6"}
+    },
+    "Artesunate + Amodiaquine, 100mg + 270mg, Tablets, Adulte": {
+        "stock_entry_bcz": {"UID": "krGXf8iXGUw", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "krGXf8iXGUw", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "krGXf8iXGUw", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "krGXf8iXGUw", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "lolDxZ0bdJF", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "krGXf8iXGUw", "COC": "mcCtxO7bWz6"}
+    },
+    "Moustiquaire Impregnée d'insecticide": {
+        "stock_entry_bcz": {"UID": "PXSRmMNZnpM", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "PXSRmMNZnpM", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "PXSRmMNZnpM", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "PXSRmMNZnpM", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "rL1IK7miYJh", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "PXSRmMNZnpM", "COC": "mcCtxO7bWz6"}
+    },
+    "Quinine Bichlorhydrate, 300mg/ml, 2ml": {
+        "stock_entry_bcz": {"UID": "b5mg2cVtm48", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "b5mg2cVtm48", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "b5mg2cVtm48", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "b5mg2cVtm48", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "Mx0jQkokP5Q", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "b5mg2cVtm48", "COC": "mcCtxO7bWz6"}
+    },
+    "Quinine HCl/Sulf, 300mg base, Tablets": {
+        "stock_entry_bcz": {"UID": "H77RuaEGD17", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "H77RuaEGD17", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "H77RuaEGD17", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "H77RuaEGD17", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "hrJZyUvxr2S", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "H77RuaEGD17", "COC": "mcCtxO7bWz6"}
+    },
+    "Quinine HCl/Sulf, 500mg base, Tablets": {
+        "stock_entry_bcz": {"UID": "WH4cMQHfCT8", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "WH4cMQHfCT8", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "WH4cMQHfCT8", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "WH4cMQHfCT8", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "tDLeslflyjT", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "WH4cMQHfCT8", "COC": "mcCtxO7bWz6"}
+    },
+    "Sulfadoxine + Pyrimethamine, 250+12.5mg, Tablets": {
+        "stock_entry_bcz": {"UID": "zuCnFYZizYX", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "zuCnFYZizYX", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "zuCnFYZizYX", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "zuCnFYZizYX", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "j0TxNEeqLrA", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "zuCnFYZizYX", "COC": "mcCtxO7bWz6"}
+    },
+    "Sulfadoxine + Pyrimethamine, 500+25mg, Tablets": {
+        "stock_entry_bcz": {"UID": "Y06LJgRiqvf", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "Y06LJgRiqvf", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "Y06LJgRiqvf", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "Y06LJgRiqvf", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "ck0Ia0oPnd3", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "Y06LJgRiqvf", "COC": "mcCtxO7bWz6"}
+    },
+    "Test Diagnostic Rapide, Malaria": {
+        "stock_entry_bcz": {"UID": "f2Pr76MxXTD", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "f2Pr76MxXTD", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "f2Pr76MxXTD", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "f2Pr76MxXTD", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "OO4n4Nl0nhq", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "f2Pr76MxXTD", "COC": "mcCtxO7bWz6"}
+    },
+    "Container Poubelle en carton de 25 pièces": {
+        "stock_entry_bcz": {"UID": "zrVpZBnRhui", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "zrVpZBnRhui", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "zrVpZBnRhui", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "zrVpZBnRhui", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "lYWWtgrqgW8", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "zrVpZBnRhui", "COC": "mcCtxO7bWz6"}
+    },
+    "Paracetamol, 500mg, Tab, Blister 25 x 10 leaflet": {
+        "stock_entry_bcz": {"UID": "rlTM9yH1Vr9", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "rlTM9yH1Vr9", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "rlTM9yH1Vr9", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "rlTM9yH1Vr9", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "Qbr0Lq9Tnig", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "rlTM9yH1Vr9", "COC": "mcCtxO7bWz6"}
+    },
+    "Seringue, U.U., Luer, 10ml, + Aig. 21G, Unité": {
+        "stock_entry_bcz": {"UID": "jZPX3DsHu6F", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "jZPX3DsHu6F", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "jZPX3DsHu6F", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "jZPX3DsHu6F", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "WDZV0tIFV6M", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "jZPX3DsHu6F", "COC": "mcCtxO7bWz6"}
+    },
+    "Gants d'examen, Latex, U.U., Poudrés, Non Stériles, Moyen, 100": {
+        "stock_entry_bcz": {"UID": "GShJaKnBvS2", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "GShJaKnBvS2", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "GShJaKnBvS2", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "GShJaKnBvS2", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "oh9mZEsP4gm", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "GShJaKnBvS2", "COC": "mcCtxO7bWz6"}
+    },
+    "Gants d'examen, Latex, U.U., Poudrés, Non Stériles, Grand, 100": {
+        "stock_entry_bcz": {"UID": "cDt1Gbikf0v", "COC": "q8NaeXeGd3g"},
+        "stock_start_bcz": {"UID": "cDt1Gbikf0v", "COC": "AeX0BJgW0s5"},
+        "stock_end_bcz": {"UID": "cDt1Gbikf0v", "COC": "zRUwlSQL9de"},
+        "quantity_consumed_bcz": {"UID": "cDt1Gbikf0v", "COC": "cjeG5HSWRIU"},
+        "quantity_lost_adjusted_bcz": {"UID": "xISwOEjnYUw", "COC": "lZGBsOl4hOS"},
+        "days_of_stock_out_bcz": {"UID": "cDt1Gbikf0v", "COC": "mcCtxO7bWz6"}
+    }
+}
+

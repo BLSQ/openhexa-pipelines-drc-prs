@@ -1,0 +1,136 @@
+================================================================================
+LISTE DES DX_UID ET COC MANQUANTS (JAMAIS RENCONTRÉS DANS LES DONNÉES)
+================================================================================
+Analyse basée sur 12 mois de données extraites (202502 à 202601)
+================================================================================
+
+================================================================================
+FOSA_EXHAUSTIVITY_DATA_ELEMENTS
+================================================================================
+
+DX_UID:
+  ✅ Tous les DX_UID attendus (38) sont présents dans les données
+  - Aucun DX_UID manquant
+
+COC MANQUANTS (5 sur 6 attendus):
+  - WZwmzIuRvwV (stock_entry_fosa)
+    DX_UIDs associés: imqSmhfQTPN, hgjnpRWXunB, fHyOLs6mPEr, pScfYi2Qxop, 
+                      FVJ2v5RgBgL, a0i3MXpBmhT, b0f8cOW1CFV, c5nKAODeM8D,
+                      Xt48UQAZppa, ccpDQ5umc0a, jlRZE5tTARe, bdy45DCTJLB,
+                      PLjvTAvttMR, S007ecRnpvZ, EwiHKw8P2xz, cbuwM5uOq3O,
+                      PlYGakAhqbk, eKHjiGzfBep, vtqAD1gqMxx
+
+  - XEN3ucCGa07 (days_of_stock_out_fosa)
+    DX_UIDs associés: imqSmhfQTPN, hgjnpRWXunB, fHyOLs6mPEr, pScfYi2Qxop,
+                      FVJ2v5RgBgL, a0i3MXpBmhT, b0f8cOW1CFV, c5nKAODeM8D,
+                      Xt48UQAZppa, ccpDQ5umc0a, jlRZE5tTARe, bdy45DCTJLB,
+                      PLjvTAvttMR, S007ecRnpvZ, EwiHKw8P2xz, cbuwM5uOq3O,
+                      PlYGakAhqbk, eKHjiGzfBep, vtqAD1gqMxx
+
+  - kOWsLrtvrhn (stock_end_fosa)
+    DX_UIDs associés: imqSmhfQTPN, hgjnpRWXunB, fHyOLs6mPEr, pScfYi2Qxop,
+                      FVJ2v5RgBgL, a0i3MXpBmhT, b0f8cOW1CFV, c5nKAODeM8D,
+                      Xt48UQAZppa, ccpDQ5umc0a, jlRZE5tTARe, bdy45DCTJLB,
+                      PLjvTAvttMR, S007ecRnpvZ, EwiHKw8P2xz, cbuwM5uOq3O,
+                      PlYGakAhqbk, eKHjiGzfBep, vtqAD1gqMxx
+
+  - pGSfKOKL9s0 (quantity_lost_adjusted_fosa)
+    DX_UIDs associés: PMuB7JCsLsg, Gq9Z3wvbcsa, E1Nfbx2upTn, OYVsvv6fCja,
+                      JBUiL4Cykj6, zeqeboHpEb2, Iz0aHMkdkQL, OUSS5mSrz1x,
+                      jokGP7OGiZ5, dZNy8p5cZKT, BuNHpvE2fEr, RPE8N0UZpdg,
+                      lKvN4sxgsIL, BVzmrRaTfcT, uW5PSD9hNBr, pbkiXu6bxQm,
+                      UAuoPAiQ1tG, vQQ4gYZ4ccT, doMlZ2uA9kF
+
+  - pdKyvaYRqCj (quantity_consumed_fosa)
+    DX_UIDs associés: imqSmhfQTPN, hgjnpRWXunB, fHyOLs6mPEr, pScfYi2Qxop,
+                      FVJ2v5RgBgL, a0i3MXpBmhT, b0f8cOW1CFV, c5nKAODeM8D,
+                      Xt48UQAZppa, ccpDQ5umc0a, jlRZE5tTARe, bdy45DCTJLB,
+                      PLjvTAvttMR, S007ecRnpvZ, EwiHKw8P2xz, cbuwM5uOq3O,
+                      PlYGakAhqbk, eKHjiGzfBep, vtqAD1gqMxx
+
+COC PRÉSENT (1 sur 6):
+  - AeX0BJgW0s5 (stock_start_fosa) ✅
+
+================================================================================
+BCZ_EXHAUSTIVITY_DATA_ELEMENTS
+================================================================================
+
+DX_UID MANQUANTS (12 sur 48 attendus):
+  - GShJaKnBvS2
+    Contexte: Gants d'examen, Latex, U.U., Poudrés, Non Stériles, Moyen, 100 - stock_entry_bcz
+
+  - Qa1IAZbh7DD
+    Contexte: Artésunate, 200mg, suppositoire - quantity_lost_adjusted_bcz
+
+  - Qbr0Lq9Tnig
+    Contexte: Paracetamol, 500mg, Tab, Blister 25 x 10 - quantity_lost_adjusted_bcz
+
+  - WDZV0tIFV6M
+    Contexte: Seringue, U.U., Luer, 10ml, + Aig. 21G - quantity_lost_adjusted_bcz
+
+  - cDt1Gbikf0v
+    Contexte: Gants d'examen, Latex, U.U., Poudrés, Non Stériles, Grand, 100 - stock_entry_bcz
+
+  - jZPX3DsHu6F
+    Contexte: Seringue, U.U., Luer, 10ml, + Aig. 21G - stock_entry_bcz
+
+  - lYWWtgrqgW8
+    Contexte: Container Poubelle en carton de 25 pièces - quantity_lost_adjusted_bcz
+
+  - oh9mZEsP4gm
+    Contexte: Gants d'examen, Latex, U.U., Poudrés, Non Stériles, Moyen, 100 - quantity_lost_adjusted_bcz
+
+  - pn2lSDlGU8S
+    Contexte: Artésunate, 200mg, suppositoire - stock_entry_bcz
+
+  - rlTM9yH1Vr9
+    Contexte: Paracetamol, 500mg, Tab, Blister 25 x 10 - stock_entry_bcz
+
+  - xISwOEjnYUw
+    Contexte: Gants d'examen, Latex, U.U., Poudrés, Non Stériles, Grand, 100 - quantity_lost_adjusted_bcz
+
+  - zrVpZBnRhui
+    Contexte: Container Poubelle en carton de 25 pièces - stock_entry_bcz
+
+COC MANQUANTS (2 sur 6 attendus):
+  - cjeG5HSWRIU (quantity_consumed_bcz)
+    DX_UIDs associés: BNYzDZBVOBP, sxW2NlrUJBF, plLLbVoJwqK, tHs2Xe7T5em,
+                      QxeCkZVPmZ4, krGXf8iXGUw, hZ0CgqXx3cP, tIeOHye5rzh,
+                      DCJfRc1TpAR, qps2qV8Nk8a, pn2lSDlGU8S, liobbb5SRzR,
+                      zrVpZBnRhui, cDt1Gbikf0v, GShJaKnBvS2, PXSRmMNZnpM,
+                      rlTM9yH1Vr9, b5mg2cVtm48, H77RuaEGD17, WH4cMQHfCT8,
+                      jZPX3DsHu6F, zuCnFYZizYX, Y06LJgRiqvf, f2Pr76MxXTD
+
+  - mcCtxO7bWz6 (days_of_stock_out_bcz)
+    DX_UIDs associés: BNYzDZBVOBP, sxW2NlrUJBF, plLLbVoJwqK, tHs2Xe7T5em,
+                      QxeCkZVPmZ4, krGXf8iXGUw, hZ0CgqXx3cP, tIeOHye5rzh,
+                      DCJfRc1TpAR, qps2qV8Nk8a, pn2lSDlGU8S, liobbb5SRzR,
+                      zrVpZBnRhui, cDt1Gbikf0v, GShJaKnBvS2, PXSRmMNZnpM,
+                      rlTM9yH1Vr9, b5mg2cVtm48, H77RuaEGD17, WH4cMQHfCT8,
+                      jZPX3DsHu6F, zuCnFYZizYX, Y06LJgRiqvf, f2Pr76MxXTD
+
+COC PRÉSENTS (4 sur 6):
+  - AeX0BJgW0s5 (stock_start_bcz) ✅
+  - q8NaeXeGd3g (stock_entry_bcz) ✅
+  - zRUwlSQL9de (stock_end_bcz) ✅
+  - lZGBsOl4hOS (quantity_lost_adjusted_bcz) ✅
+
+================================================================================
+RÉSUMÉ
+================================================================================
+
+FOSA:
+  - DX_UID manquants: 0 / 38 (0%)
+  - COC manquants: 5 / 6 (83%)
+    → Tous les indicateurs sauf stock_start_fosa sont manquants
+
+BCZ:
+  - DX_UID manquants: 12 / 48 (25%)
+  - COC manquants: 2 / 6 (33%)
+    → quantity_consumed_bcz et days_of_stock_out_bcz sont manquants
+    → 6 médicaments entièrement manquants:
+       * Gants d'examen (3 variantes)
+       * Artésunate 200mg suppositoire
+       * Paracetamol 500mg
+       * Container Poubelle
+       * Seringue 10ml
