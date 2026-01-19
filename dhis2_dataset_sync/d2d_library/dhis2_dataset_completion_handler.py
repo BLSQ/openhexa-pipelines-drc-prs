@@ -8,6 +8,12 @@ from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2 import DHIS2
 
 
+class DHIS2ImportError(RuntimeError):
+    """Custom exception for DHIS2 import errors."""
+
+    pass
+
+
 class DatasetCompletionSync:
     """Main class to handle pushing data to DHIS2.
 
@@ -338,7 +344,7 @@ class DatasetCompletionSync:
             self.logger.error(
                 f"No JSON response received for completion request ds: {ds} pe: {pe} ou: {ou} from DHIS2 API."
             )
-            return
+            raise DHIS2ImportError("Empty or invalid JSON response from DHIS2")
 
         conflicts: list[str] = json_or_none.get("conflicts", {})
         status = json_or_none.get("status")
@@ -349,7 +355,10 @@ class DatasetCompletionSync:
                     f"Conflict pushing completion for ds: {ds} pe: {pe} ou: {ou} status: {status} - {conflict}"
                 )
             self._update_import_summary(response=json_or_none)
-            return
+            raise DHIS2ImportError(
+                f"DHIS2 completion push failed with status={status} "
+                f"and {len(conflicts)} conflict(s) for ds:{ds} pe:{pe} ou:{ou}"
+            )
 
         if status == "SUCCESS":
             self.logger.info(f"Successfully pushed to target completion ds: {ds} pe:{pe} ou: {ou}")
