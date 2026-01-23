@@ -80,7 +80,7 @@ class DatasetCompletionSync:
                 self.import_summary["errors"]["fetch_errors"] += 1
                 self.logger.error(f"Invalid JSON from {endpoint} for ds:{dataset_id} pe:{period} ou:{org_unit}: {e}")
                 return []
-            if not completion:
+            if not completion and not children:
                 self.import_summary["errors"]["no_completion"] += 1
                 self.logger.info(
                     f"No completion status found at source for ds: {dataset_id} pe: {period} ou: {org_unit}"
@@ -161,7 +161,7 @@ class DatasetCompletionSync:
         completion_statuses = []
         for ou in org_units:
             completion = self._fetch_completion_status_from_source(
-                dataset_id=dataset_id, period=period, org_unit=ou, timeout=30
+                dataset_id=dataset_id, period=period, org_unit=ou, children=True, timeout=30
             )
             if completion:
                 completion_statuses.extend(completion)
@@ -179,7 +179,9 @@ class DatasetCompletionSync:
             if not completion_status.empty:
                 return completion_status.iloc[0].to_dict()
 
-        results = self._fetch_completion_status_from_source(dataset_id=dataset_id, period=period, org_unit=org_unit)
+        results = self._fetch_completion_status_from_source(
+            dataset_id=dataset_id, period=period, org_unit=org_unit, children=False
+        )
         for item in results or []:
             if item.get("organisationUnit") == org_unit:
                 return item
