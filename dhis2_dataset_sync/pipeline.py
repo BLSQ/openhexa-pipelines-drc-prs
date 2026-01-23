@@ -2,7 +2,6 @@ import logging
 import shutil
 import time
 from datetime import datetime
-from itertools import product
 from pathlib import Path
 
 import pandas as pd
@@ -31,6 +30,7 @@ from utils import (
 # Ticket(s) related to this pipeline:
 #   -https://bluesquare.atlassian.net/browse/SANRUSSC24-32
 #   -https://bluesquare.atlassian.net/browse/SAN-122
+#   -https://bluesquare.atlassian.net/browse/SAN-125
 # github repo:
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
@@ -65,9 +65,7 @@ from utils import (
     default=False,
     help="Sync dataset statuses between source and target DHIS2.",
 )
-def dhis2_dataset_sync(
-    run_ou_sync: bool = True, run_extract_data: bool = True, run_push_data: bool = True, run_ds_sync: bool = False
-):
+def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data: bool, run_ds_sync: bool):
     """Main pipeline function for DHIS2 dataset synchronization.
 
     Parameters
@@ -336,8 +334,6 @@ def align_dataset_org_units(
     # Check this: https://rdc-prs.com/api/dataSets/Om2WgL4TNEy.json
     if dataset_mappings.get("ZONES_SANTE"):
         source_datasets_selection = handle_zs_mapping(
-            target_dhis2=target_dhis2,
-            ds_id=dataset_mappings.get("ZONES_SANTE"),
             source_ds_selection=source_datasets_selection,
             source_pyramid=source_pyramid,
         )
@@ -350,7 +346,7 @@ def align_dataset_org_units(
     error_count = 0
     update_count = 0
     for source_ds in source_datasets_selection.iter_rows(named=True):
-        current_run.log_debug(f"Processing dataset: {source_ds['name']} ({source_ds['id']})")
+        current_run.log_debug(f"Processing dataset: {source_ds['name']} ({source_ds['id']}) from Sync config")
         source_ds_ou = source_ds["organisation_units"]
 
         if source_ds["id"] not in ["FULL_PYRAMID", "ZONES_SANTE"]:
@@ -358,37 +354,42 @@ def align_dataset_org_units(
             valid_ous = set(source_pyramid.id)
             source_ds_ou = [ou for ou in source_ds_ou if ou in valid_ous]
 
-        target_ds = target_datasets.filter(pl.col("id") == dataset_mappings[source_ds["id"]])
+        target_ds_ids = dataset_mappings[source_ds["id"]]
+        target_ds = target_datasets.filter(pl.col("id").is_in(target_ds_ids))
         if target_ds.is_empty():
             current_run.log_warning(f"Dataset id: {dataset_mappings[source_ds['id']]} not found in DHIS2 target.")
             continue
 
-        target_ds_ou = target_ds["organisation_units"].explode().to_list()
-        if set(source_ds_ou) != set(target_ds_ou):
-            update_count = update_count + 1
-            msg = (
-                f"Updating {source_ds['name']} ({source_ds['id']}) OU count: {len(source_ds_ou)} "
-                f"> target {target_ds['name'].item()} ({target_ds['id'].item()}) OU count: {len(target_ds_ou)}"
-            )
-            current_run.log_info(msg)
-            logger.info(msg)
-            update_response = push_dataset_org_units(
-                dhis2_client=target_dhis2,
-                dataset_id=target_ds["id"].item(),
-                new_org_units=source_ds_ou,
-                dry_run=dry_run,  # dry_run=True -> No changes applied in DHIS2
-            )
+        for row in target_ds.iter_rows(named=True):
+            target_ds_id = row["id"]
+            target_ds_name = row["name"]
+            target_ds_ou = row["organisation_units"]
 
-            if "error" in update_response:
-                error_count = error_count + 1
-                logger.error(f"Error updating dataset {source_ds['name']} org units: {update_response['error']}")
-            else:
+            if set(source_ds_ou) != set(target_ds_ou):
+                update_count = update_count + 1
                 msg = (
-                    f"Dataset {target_ds['name'].item()} ({target_ds['id'].item()}) org units updated. "
-                    f"OU count: {len(source_ds_ou)}"
+                    f"Updating target {target_ds_name} (id: {target_ds_id}) with "
+                    f"source dataset ({source_ds['name']}) OU count: {len(source_ds_ou)}"
                 )
                 current_run.log_info(msg)
                 logger.info(msg)
+                update_response = push_dataset_org_units(
+                    dhis2_client=target_dhis2,
+                    dataset_id=target_ds_id,
+                    new_org_units=source_ds_ou,
+                    dry_run=dry_run,  # dry_run=True -> No changes applied in DHIS2
+                )
+
+                if "error" in update_response:
+                    error_count = error_count + 1
+                    logger.error(
+                        f"Error updating dataset {target_ds_name} (id: {target_ds_id}) - "
+                        f"Error: {update_response['error']}"
+                    )
+                else:
+                    msg = f"Dataset {target_ds_name} (id: {target_ds_id}) updated OU count: {len(source_ds_ou)}"
+                    current_run.log_info(msg)
+                    logger.info(msg)
 
     if error_count > 0:
         current_run.log_warning(
@@ -878,30 +879,6 @@ def handle_data_element_extracts(
         save_logs(logs_file, output_dir=pipeline_path / "logs" / "extract")
 
 
-def resolve_dataset_metrics(
-    dataset_id: str,
-    metrics: dict,
-) -> list:
-    """Resolves the metrics for a given dataset based on its definitions.
-
-    Parameters
-    ----------
-    dataset_id : str
-        The ID of the dataset for which metrics are to be resolved.
-    metrics : list
-        list of dataset metrics.
-
-    Returns
-    -------
-    list
-        List of metric identifiers for the specified dataset.
-    """
-    ds_metrics = []
-    if len(metrics) > 0:
-        ds_metrics = [f"{ds}.{metric}" for ds, metric in product([dataset_id], metrics)]
-    return ds_metrics
-
-
 def apply_data_element_extract_config(
     df: pd.DataFrame, extract_config: dict, logger: logging.Logger | None = None
 ) -> pd.DataFrame:
@@ -1133,7 +1110,8 @@ def handle_dataset_completion(
         current_run.log_info(msg)
         return
 
-    province_uids = dhis2_pyramid[dhis2_pyramid["level"] == 2]["id"].to_list()
+    pyramid_level = 2
+    province_uids = dhis2_pyramid[dhis2_pyramid["level"] == pyramid_level]["id"].to_list()
     current_run.log_info(f"Building source completion table for {len(province_uids)} OUs level 2 period {period}.")
     try:
         syncer.sync(
@@ -1145,6 +1123,7 @@ def handle_dataset_completion(
             logging_interval=4000,
             ds_processed_path=ds_processed,
         )
+        syncer.reset_import_summary()  # reset summary after each run
     except Exception as e:
         current_run.log_error(f"Error setting completions for dataset {target_ds_id}, period {period} - Error: {e!s}.")
 
@@ -1184,17 +1163,11 @@ def handle_full_pyramid_mapping(target_dhis2: DHIS2, source_ds_selection: pl.Dat
     return source_ds_selection.vstack(new_row)
 
 
-def handle_zs_mapping(
-    target_dhis2: DHIS2, ds_id: str, source_ds_selection: pl.DataFrame, source_pyramid: pd.DataFrame
-) -> pl.DataFrame:
+def handle_zs_mapping(source_ds_selection: pl.DataFrame, source_pyramid: pd.DataFrame) -> pl.DataFrame:
     """Handles the full pyramid dataset mapping by creating a dummy dataset in the source datasets.
 
     Parameters
     ----------
-    target_dhis2 : DHIS2
-        DHIS2 client for the target instance.
-    ds_id : str
-        The dataset ID to which the ZS org units will be added.
     source_ds_selection : pl.DataFrame
         DataFrame containing the selected source datasets.
     source_pyramid : pd.DataFrame
@@ -1205,24 +1178,12 @@ def handle_zs_mapping(
     pl.DataFrame
         Updated DataFrame with the full pyramid dataset included.
     """
-    # Retrieve all organisation units from the PRS DHIS2 and create a dummy
-    # dataset mapping in the source datasets table with all OUS at level 5 (around 20365 OUS)
-    # we are not pushing nor computing rates for this dummy dataset. So the number of OUS is irrelevant.
+    # Add a dummy dataset "source_ds_selection" table with id "ZONES_SANTE"
+    # The idea is to use this list of ZS to push it into the target Datasets in PRS
+    # that should follow zones de sante (around 407 OUS)
     level = 3
     zs_ou_ids = source_pyramid[source_pyramid["level"] == level]["id"].to_list()
-
-    # GET current dataset from PRS DHIS2
-    endpoint = "dataSets"
-    url = f"{target_dhis2.api.url}/{endpoint}/{ds_id}"
-    try:
-        dataset_payload = dhis2_request(target_dhis2.api.session, "get", url)
-    except requests.RequestException as e:
-        return {"error": f"Network/HTTP error during payload fetch for dataset {ds_id} alignment: {e!s}"}
-    except Exception as e:
-        return {"error": f"Unexpected error during payload fetch for dataset {ds_id} alignment: {e!s}"}
-
-    ds_uids = [ou["id"] for ou in dataset_payload["organisationUnits"]]
-    new_org_units = list(set(zs_ou_ids) | set(ds_uids))  # push ZS from the 20 Provinces + current
+    new_org_units = list(set(zs_ou_ids))  # push ZS from the 20 Provinces + current
     new_row = pl.DataFrame(
         {
             "id": ["ZONES_SANTE"],

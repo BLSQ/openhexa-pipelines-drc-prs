@@ -37,7 +37,7 @@ class DatasetCompletionSync:
         self.dry_run = dry_run
         self.import_summary = {
             "import_counts": {"imported": 0, "updated": 0, "ignored": 0, "deleted": 0},
-            "errors": {"fetch_errors": 0, "push_errors": 0},
+            "errors": {"fetch_errors": 0, "no_completion": 0, "push_errors": 0},
         }
         self.completion_table = pd.DataFrame()
         self.logger = logger if logger else logging.getLogger(__name__)
@@ -47,6 +47,7 @@ class DatasetCompletionSync:
         dataset_id: str,
         period: str,
         org_unit: str,
+        children: bool = True,
         timeout: int = 5,
     ) -> list[dict]:
         """Fetch completion status from source DHIS2.
@@ -55,6 +56,7 @@ class DatasetCompletionSync:
             dataset_id: The dataset ID to fetch completion status for.
             period: The period for which to fetch the completion status.
             org_unit: The organisation unit to fetch completion status for.
+            children: Whether to include child org units in the fetch.
             timeout: Timeout for the request in seconds.
 
         Returns:
@@ -62,7 +64,12 @@ class DatasetCompletionSync:
                 Returns an empty list if the request fails or no data is found.
         """
         endpoint = f"{self.source_dhis2.api.url}/completeDataSetRegistrations"
-        params = {"period": period, "orgUnit": org_unit, "children": "true", "dataSet": dataset_id}
+        params = {
+            "period": period,
+            "orgUnit": org_unit,
+            "children": "true" if children else "false",
+            "dataSet": dataset_id,
+        }
 
         try:
             response = self.source_dhis2.api.session.get(endpoint, params=params, timeout=timeout)
@@ -73,6 +80,11 @@ class DatasetCompletionSync:
                 self.import_summary["errors"]["fetch_errors"] += 1
                 self.logger.error(f"Invalid JSON from {endpoint} for ds:{dataset_id} pe:{period} ou:{org_unit}: {e}")
                 return []
+            if not completion:
+                self.import_summary["errors"]["no_completion"] += 1
+                self.logger.info(
+                    f"No completion status found at source for ds: {dataset_id} pe: {period} ou: {org_unit}"
+                )
             return completion if completion else []
         except requests.RequestException as e:
             self.import_summary["errors"]["fetch_errors"] += 1
@@ -128,9 +140,9 @@ class DatasetCompletionSync:
         try:
             response = self.target_dhis2.api.session.post(endpoint, json=payload, params=params, timeout=timeout)
             response.raise_for_status()
-        except requests.RequestException as e:
-            self.import_summary["errors"]["push_errors"] += 1
-            self.logger.error(f"Push (PUT) request failed for ds:{dataset_id} ou:{org_unit} pe:{period} error: {e}")
+        except requests.RequestException:
+            # avoid doube counting errors in summary
+            # self.import_summary["errors"]["push_errors"] += 1
             raise
         finally:
             self._process_response(ds=dataset_id, pe=period, ou=org_unit, response=response)
@@ -167,8 +179,12 @@ class DatasetCompletionSync:
             if not completion_status.empty:
                 return completion_status.iloc[0].to_dict()
 
-        first_value = self._fetch_completion_status_from_source(dataset_id=dataset_id, period=period, org_unit=org_unit)
-        return first_value[0] if first_value else None
+        results = self._fetch_completion_status_from_source(dataset_id=dataset_id, period=period, org_unit=org_unit)
+        for item in results or []:
+            if item.get("organisationUnit") == org_unit:
+                return item
+
+        return None
 
     def sync(
         self,
@@ -179,6 +195,7 @@ class DatasetCompletionSync:
         period: list[str],
         logging_interval: int = 2000,
         ds_processed_path: Path | None = None,
+        mark_uncompleted_as_processed: bool = False,
     ) -> None:
         """Sync completion status between datasets.
 
@@ -189,8 +206,9 @@ class DatasetCompletionSync:
         period: The period for which to sync the completion status.
         logging_interval: Interval for logging progress (defaults to 2000).
         ds_processed_path: Path to save processed org units (if None, no file saving nor comparison).
+        mark_uncompleted_as_processed: If True, org units with no completion status will be marked as processed.
         """
-        self._reset_import_summary()
+        self.reset_import_summary()
 
         if not org_units:
             msg = f"No org units provided for period {period}. DS sync skipped."
@@ -224,7 +242,15 @@ class DatasetCompletionSync:
                 )
 
                 if not completion_status:
-                    processed.append(ou)  # no status to update, mark as processed
+                    if mark_uncompleted_as_processed:
+                        processed.append(ou)  # if True, empty completion -> mark as processed
+                    continue
+
+                if "date" not in completion_status or "completed" not in completion_status:
+                    self.import_summary["errors"]["push_errors"] += 1
+                    self.logger.error(
+                        f"Missing keys in completion status for period {period}, org unit {ou}: {completion_status}"
+                    )
                     continue
 
                 try:
@@ -249,7 +275,7 @@ class DatasetCompletionSync:
         except Exception as e:
             self.logger.error(f"Error setting dataset completion for dataset {target_dataset_id}, period {period}: {e}")
         finally:
-            self._log_summary(org_units=org_units, period=period)
+            self._log_summary(org_units=org_units_to_process, period=period)
 
     def _get_unprocessed_org_units(self, org_units: list, processed_path: Path | None, period: str) -> list:
         if processed_path is None:
@@ -314,11 +340,19 @@ class DatasetCompletionSync:
 
     def _log_summary(self, org_units: list, period: str) -> None:
         msg = (
-            f"Dataset completion for period {period} summary: {self.import_summary['import_counts']} "
-            f"total org units: {len(org_units)}"
+            f"Dataset completion period {period} summary: {self.import_summary['import_counts']} "
+            f"total org units: {len(org_units)} "
         )
         current_run.log_info(msg)
         self.logger.info(msg)
+
+        if self.import_summary["errors"]["no_completion"] > 0:
+            msg = (
+                f"{self.import_summary['errors']['no_completion']} out of "
+                f"{len(org_units)} completion statuses failed to be retrieved from source."
+            )
+            current_run.log_warning(msg)
+            self.logger.warning(msg)
 
         if self.import_summary["errors"]["fetch_errors"] > 0:
             msg = (
@@ -378,8 +412,9 @@ class DatasetCompletionSync:
             for key in ["imported", "updated", "ignored", "deleted"]:
                 self.import_summary["import_counts"][key] += import_counts.get(key, 0)
 
-    def _reset_import_summary(self) -> None:
+    def reset_import_summary(self) -> None:
+        """Reset the import summary to its initial state."""
         self.import_summary = {
             "import_counts": {"imported": 0, "updated": 0, "ignored": 0, "deleted": 0},
-            "errors": {"fetch_errors": 0, "push_errors": 0},
+            "errors": {"fetch_errors": 0, "no_completion": 0, "push_errors": 0},
         }
