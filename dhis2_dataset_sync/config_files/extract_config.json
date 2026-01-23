@@ -1,9 +1,9 @@
 {
     "SETTINGS":{
         "SOURCE_DHIS2_CONNECTION": "drc-snis",
-        "NUMBER_MONTHS_WINDOW": 3,
-		"STARTDATE": "202501",
-		"ENDDATE": "202508",
+        "NUMBER_MONTHS_WINDOW": 4,
+		"STARTDATE": "",
+		"ENDDATE": "",
         "MODE": "DOWNLOAD_REPLACE"
     },
     "DATA_ELEMENTS": {

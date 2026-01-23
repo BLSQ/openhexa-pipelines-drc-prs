@@ -31,8 +31,8 @@
         }
     },    
     "DATASETS": {
-        "DxDuYrrZSa7": "wMCnDAQfGZN",
-        "FULL_PYRAMID": "dbf1uGX1XU3",
-        "ZONES_SANTE": "Om2WgL4TNEy"
+        "DxDuYrrZSa7": ["wMCnDAQfGZN"],
+        "FULL_PYRAMID": ["dbf1uGX1XU3"],
+        "ZONES_SANTE": ["Om2WgL4TNEy", "jp5eWxb66XT"]
     }
 }

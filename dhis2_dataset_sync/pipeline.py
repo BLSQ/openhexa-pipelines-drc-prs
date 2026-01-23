@@ -701,7 +701,9 @@ def sync_dataset_statuses(
     try:
         for extract_config in ds_extracts:
             ds_extract_dir = ds_sync_dir / extract_config.get("EXTRACT_UID")
+            sync_window = extract_config.get("SYNC_PERIOD_WINDOW", None)
             files = sorted(list(ds_extract_dir.glob("ds_sync_*.parquet")))
+            files = files[-sync_window:] if sync_window else files
 
             for file in files:
                 period = file.stem.replace("ds_sync_", "")

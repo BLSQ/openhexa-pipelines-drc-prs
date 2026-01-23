@@ -3,7 +3,7 @@
         "TARGET_DHIS2_CONNECTION": "drc-prs",
         "IMPORT_STRATEGY": "CREATE_AND_UPDATE",
 		"DRY_RUN": false,
-		"MAX_POST": 2000,
+		"MAX_POST": 5000,
 		"PUSH_WAIT_MINUTES": 5
     },
     "ORG_UNITS": {},
@@ -11,8 +11,9 @@
         "EXTRACTS": [
             {              
                 "EXTRACT_UID": "level_zs",
-                "SOURCE_DATASET_UID" : null,
-                "TARGET_DATASET_UID" : null,
+                "SOURCE_DATASET_UID" : "k8mWHTAqHYZ",
+                "TARGET_DATASET_UID" : "jp5eWxb66XT",
+                "SYNC_PERIOD_WINDOW" : 6,
                 "MAPPINGS": {
                     "PMuB7JCsLsg": {
                         "UID": "MFcy5dErsKR",
@@ -476,6 +477,7 @@
                 "EXTRACT_UID": "level_fosa",
                 "SOURCE_DATASET_UID" : "DxDuYrrZSa7",
                 "TARGET_DATASET_UID" : "wMCnDAQfGZN",
+                "SYNC_PERIOD_WINDOW" : 10,
                 "MAPPINGS": {
                     "eKHjiGzfBep": {
                         "UID": "eKHjiGzfBep",
@@ -939,6 +941,7 @@
                 "EXTRACT_UID": "des_lvl_fosa",
                 "SOURCE_DATASET_UID" : null,
                 "TARGET_DATASET_UID" : null,
+                "SYNC_PERIOD_WINDOW" : null,
                 "MAPPINGS": {
                     "BCcFZzgTlxQ": {
                         "UID": "BCcFZzgTlxQ",
