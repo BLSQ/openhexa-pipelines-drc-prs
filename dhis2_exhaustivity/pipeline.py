@@ -96,22 +96,12 @@ def dhis2_exhaustivity(
             pipeline_path=pipeline_path,
             run_task=run_extract_data,
         )
-
-        # 3) Compute exhaustivity from extracted data (automatic if extract or push is enabled)
-        # If extract is enabled → compute after extraction
-        # If push is enabled → compute before pushing (even if extract is disabled, in case of recovery)
-        should_compute = run_extract_data or run_push_data
-        compute_ready = compute_exhaustivity_data(
-            pipeline_path=pipeline_path,
-            run_task=should_compute,
-            wait=extract_ready if run_extract_data else True,
-        )
-
-        # 4) Push data to target DHIS2 (must wait for both compute AND sync)
+        
+        # 3) Push data to target DHIS2 (must wait for extract if enabled and sync)
         push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
-            wait=(compute_ready and sync_ready),
+            wait=(sync_ready and (extract_ready if run_extract_data else True)),
         )
 
     except Exception as e:
@@ -187,13 +177,24 @@ def extract_data(
     if not data_element_extracts:
         data_element_extracts = config.get("EXTRACTS", [])
     
+    # Initialize queue for compute -> push flow
+    queue_dir = pipeline_path / "data"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    db_path = queue_dir / ".queue.db"
+    push_queue = Queue(db_path)
+
     handle_data_element_extracts(
         pipeline_path=pipeline_path,
         dhis2_extractor=dhis2_extractor,
         data_element_extracts=data_element_extracts,
         extract_periods=get_periods(start, end),
         pipeline_config=config,
+        push_queue=push_queue,
     )
+    
+    # Signal end of compute/enqueue
+    push_queue.enqueue("FINISH")
+    current_run.log_info("✅ FINISH marker enqueued after extraction")
     
     return True
 
@@ -204,6 +205,7 @@ def handle_data_element_extracts(
     data_element_extracts: list,
     extract_periods: list[str],
     pipeline_config: dict | None = None,
+    push_queue: Queue | None = None,
 ) -> None:
     """Handles data elements extracts based on the configuration."""
     if len(data_element_extracts) == 0:
@@ -279,41 +281,96 @@ def handle_data_element_extracts(
                     except Exception as e:
                         current_run.log_warning(f"Could not delete old extract file {old_file.name}: {e}")
 
+        # Prepare exhaustivity context for this extract (compute will run per period)
+        expected_dx_uids = None
+        if pipeline_config:
+            drug_mapping_file = extract.get("DRUG_MAPPING_FILE")
+            if drug_mapping_file:
+                _, expected_dx_uids = load_drug_mapping(pipeline_path / "configuration", drug_mapping_file)
+        
+        output_dir = pipeline_path / "data" / "processed" / folder_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Clean old processed files for this extract before starting
+        old_processed_files = list(output_dir.glob("*.parquet"))
+        if old_processed_files:
+            current_run.log_info(
+                f"🧹 Cleaning {len(old_processed_files)} old processed file(s) for extract {extract_id}"
+            )
+            for old_file in old_processed_files:
+                try:
+                    old_file.unlink()
+                    logging.info(f"Deleted old processed file: {old_file.name}")
+                except Exception as e:
+                    current_run.log_warning(f"Could not delete old file {old_file.name}: {e}")
+                    logging.warning(f"Could not delete old file {old_file.name}: {e}")
+
         # run data elements extraction per period
         for period in extract_periods:
+            # Extract data for period
             try:
-                output_file = dhis2_extractor.analytics_data_elements.download_period(
+                extract_path = dhis2_extractor.analytics_data_elements.download_period(
                     data_elements=data_element_uids,
                     org_units=org_units,
                     period=period,
                     output_dir=pipeline_path / "data" / "extracts" / folder_name,
                 )
-                if output_file is None:
-                    current_run.log_warning(
-                        f"Extract {extract_id} download returned None "
-                        f"for period {period}. No file created."
-                    )
-                elif not output_file.exists():
-                    current_run.log_warning(
-                        f"Extract {extract_id} download returned path {output_file} "
-                        f"but file does not exist for period {period}."
-                    )
-                else:
-                    current_run.log_info(
-                        f"Extract {extract_id} successfully created file "
-                        f"for period {period}: {output_file}"
-                    )
-
             except Exception as e:
                 error_type = type(e).__name__
                 error_msg = str(e)
-                # Log more details about the error
                 current_run.log_warning(
                     f"Extract {extract_id} download failed for period {period} "
                     f"({error_type}): {error_msg[:200]}. Continuing with next period."
                 )
-                logging.error(f"Extract {extract_id} - period {period} error ({error_type}): {e!s}")
-                # Log full traceback for debugging
+                logging.error(f"Extract {extract_id} - period {period} download error ({error_type}): {e!s}")
+                logging.error(f"Full traceback for period {period}:\n{traceback.format_exc()}")
+                continue  # continue with next period instead of stopping the entire extract
+            
+            # Compute exhaustivity and enqueue if extraction succeeded
+            try:
+                if extract_path is not None:
+                    # Compute exhaustivity for this period and enqueue for push
+                    period_exhaustivity_df = compute_exhaustivity(
+                        pipeline_path=pipeline_path,
+                        extract_id=extract_id,
+                        periods=[period],
+                        expected_dx_uids=expected_dx_uids,
+                        expected_org_units=org_units,
+                        extract_config_item=extract,
+                        extracts_folder=extracts_dir,
+                    )
+                    
+                    if len(period_exhaustivity_df) == 0:
+                        current_run.log_info(
+                            f"Period {period}: no data after computation, skipping "
+                            f"(no org units will be pushed for this period)"
+                        )
+                        continue
+                    
+                    period_exhaustivity_org_level = aggregate_to_org_unit_level(period_exhaustivity_df)
+                    org_unit_stats = calculate_org_unit_statistics(period_exhaustivity_org_level)
+                    coc_stats = calculate_coc_statistics(period_exhaustivity_df)
+
+                    aggregated_file = output_dir / f"exhaustivity_{period}.parquet"
+                    save_to_parquet(
+                        data=period_exhaustivity_org_level,
+                        filename=aggregated_file,
+                    )
+                    
+                    if push_queue is not None:
+                        push_queue.enqueue(f"{extract_id}|{aggregated_file}")
+                    
+                    log_period_statistics(period, org_unit_stats, coc_stats)
+            except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                current_run.log_warning(
+                    f"Exhaustivity computation failed for extract {extract_id}, period {period} "
+                    f"({error_type}): {error_msg[:200]}. Continuing with next period."
+                )
+                logging.error(
+                    f"Extract {extract_id} - period {period} exhaustivity computation error ({error_type}): {e!s}"
+                )
                 logging.error(f"Full traceback for period {period}:\n{traceback.format_exc()}")
                 continue  # continue with next period instead of stopping the entire extract
 
@@ -345,107 +402,6 @@ def get_periods(start: str, end: str) -> list[str]:
         )
     except Exception as e:
         raise Exception(f"Error in start/end date configuration: {e!s}") from e
-
-
-@dhis2_exhaustivity.task
-def compute_exhaustivity_data(
-    pipeline_path: Path,
-    run_task: bool = True,
-    wait: bool = True,
-) -> bool:
-    """Compute exhaustivity from extracted data and save the result to processed/ folder.
-    
-    Returns
-    -------
-    bool
-        True if computation completed successfully, False otherwise.
-    
-    Parameters
-    ----------
-    pipeline_path : Path
-        Path to the pipeline directory.
-    run_task : bool
-        Whether to run the task or skip it.
-    wait : bool
-        Dependency flag - task waits for this to be True before running.
-    """
-    if not run_task:
-        current_run.log_info("Exhaustivity computation task skipped.")
-        return True
-    
-    current_run.log_info("Exhaustivity computation task started.")
-    
-    # Initialize queue early (before try block) so we can always enqueue FINISH
-    # Use data folder (writable on OpenHexa) instead of configuration folder
-    queue_dir = pipeline_path / "data"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    db_path = queue_dir / ".queue.db"
-    push_queue = Queue(db_path)
-    
-    try:
-        configure_logging(logs_path=pipeline_path / "logs" / "compute", task_name="compute_exhaustivity")
-    except Exception as e:
-        # If configure_logging fails (e.g., in test environment), continue anyway
-        current_run.log_warning(f"Could not configure logging: {e!s}")
-
-    # Load pipeline configuration (extract_config.json + push_settings.json)
-    config = load_pipeline_config(pipeline_path / "configuration")
-    
-    # Get date range (same logic as extract_data - no DYNAMIC_DATE parameter)
-    # Calculate periods: if STARTDATE/ENDDATE are set, use them; otherwise compute using default window
-    months_lag = config["EXTRACTION"].get("MONTHS_WINDOW", 3)  # default 3 months window
-    if not config["EXTRACTION"].get("STARTDATE"):
-        start = (datetime.now() - relativedelta(months=months_lag)).strftime("%Y%m")
-    else:
-        start = config["EXTRACTION"].get("STARTDATE")
-    if not config["EXTRACTION"].get("ENDDATE"):
-        end = (datetime.now() - relativedelta(months=1)).strftime("%Y%m")  # go back 1 month
-    else:
-        end = config["EXTRACTION"].get("ENDDATE")
-    
-    # Note: Queue is reset at pipeline start (in main function) to avoid race conditions
-    # Compute exhaustivity for all extracts
-    exhaustivity_periods = get_periods(start, end)
-    
-    # Use DATA_ELEMENTS.EXTRACTS structure for consistency
-    extracts_list = config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
-    # Fallback to EXTRACTS for backward compatibility
-    if not extracts_list:
-        extracts_list = config.get("EXTRACTS", [])
-    
-    current_run.log_info(
-        f"Processing {len(extracts_list)} extracts "
-        f"for {len(exhaustivity_periods)} periods"
-    )
-    
-    for target_extract in extracts_list:
-        # Support both EXTRACT_UID (new) and EXTRACT_ID (legacy) for backward compatibility
-        extract_id = target_extract.get("EXTRACT_UID") or target_extract.get("EXTRACT_ID")
-        if not extract_id:
-            current_run.log_warning("Extract missing EXTRACT_UID/EXTRACT_ID, skipping")
-            continue
-        current_run.log_info(f"Computing exhaustivity for extract: {extract_id}")
-        
-        try:
-            compute_exhaustivity_and_queue(
-                pipeline_path=pipeline_path,
-                extract_id=extract_id,
-                exhaustivity_periods=exhaustivity_periods,
-                push_queue=push_queue,
-            )
-            current_run.log_info(f"✅ Completed exhaustivity computation for extract: {extract_id}")
-        except Exception as e:
-            current_run.log_error(f"❌ Error computing exhaustivity for {extract_id}: {e!s}")
-            traceback_str = traceback.format_exc()
-            logging.error(f"Full traceback for {extract_id}:\n{traceback_str}")
-            # Continue with next extract instead of crashing
-            current_run.log_warning(f"⚠️  Skipping {extract_id} due to error, continuing with next extract")
-    
-    # Enqueue FINISH marker after all extracts are processed
-    push_queue.enqueue("FINISH")
-    current_run.log_info("✅ FINISH marker enqueued")
-    
-    return True
 
 
 def aggregate_to_org_unit_level(period_exhaustivity: pl.DataFrame) -> pl.DataFrame:
@@ -559,166 +515,6 @@ def log_period_statistics(period: str, org_unit_stats: dict, coc_stats: dict) ->
         f"{coc_stats['coc_count_0_total']} incomplètes (0) = "
         f"{coc_stats['coc_percentage']:.1f}% complètes"
     )
-
-
-def compute_exhaustivity_and_queue(
-    pipeline_path: Path,
-    extract_id: str,
-    exhaustivity_periods: list[str],
-    push_queue: Queue,
-) -> bool:
-    """Compute exhaustivity from extracted data and save the result to processed/ folder.
-    
-    Returns
-    -------
-    bool
-        True if computation completed successfully, False otherwise.
-
-    Parameters
-    ----------
-    pipeline_path : Path
-        Path to the pipeline directory.
-    extract_id : str
-        Identifier for the data extract.
-    exhaustivity_periods : list[str]
-        List of periods to process.
-    push_queue : Queue
-        Queue for pushing processed files.
-    """
-    # Load pipeline configuration (extract_config.json + push_settings.json)
-    config = load_pipeline_config(pipeline_path / "configuration")
-    config_dir = pipeline_path / "configuration"
-    
-    # Find the extract configuration
-    extract_config_item = get_extract_config(config, extract_id)
-    
-    # Create folder name based on extract_id
-    folder_name = f"Extract {extract_id}"
-    
-    extracts_folder = pipeline_path / "data" / "extracts" / folder_name
-    output_dir = pipeline_path / "data" / "processed" / folder_name
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    current_run.log_info(
-        f"📁 Processing extract {extract_id}: "
-        f"extracts folder: {extracts_folder.relative_to(pipeline_path)}, "
-        f"output folder: {output_dir.relative_to(pipeline_path)}"
-    )
-    
-    # Clean old processed files for this extract before starting
-    if output_dir.exists():
-        old_files = list(output_dir.glob("*.parquet"))
-        if old_files:
-            current_run.log_info(f"🧹 Cleaning {len(old_files)} old processed file(s) for extract {extract_id}")
-            for old_file in old_files:
-                try:
-                    old_file.unlink()
-                    logging.info(f"Deleted old processed file: {old_file.name}")
-                except Exception as e:
-                    current_run.log_warning(f"Could not delete old file {old_file.name}: {e}")
-                    logging.warning(f"Could not delete old file {old_file.name}: {e}")
-    
-    # Get expected DX_UIDs from drug_mapping and ORG_UNITs from source dataset
-    expected_dx_uids = None
-    expected_org_units = None
-    
-    if extract_config_item:
-        # Load UIDs from drug_mapping file
-        drug_mapping_file = extract_config_item.get("DRUG_MAPPING_FILE")
-        if drug_mapping_file:
-            _, expected_dx_uids = load_drug_mapping(config_dir, drug_mapping_file)
-        
-        # Get org units from SOURCE_DATASET_UID (REQUIRED - no fallback)
-        source_dataset_uid = extract_config_item.get("SOURCE_DATASET_UID")
-        if not source_dataset_uid:
-            raise ValueError(
-                f"No SOURCE_DATASET_UID defined for extract: {extract_id}"
-            )
-        
-        try:
-            # Use SOURCE_DHIS2 to retrieve org units from SOURCE_DATASET_UID
-            dhis2_client = connect_to_dhis2(
-                connection_str=config["CONNECTIONS"]["SOURCE_DHIS2"], cache_dir=None
-            )
-            datasets = get_datasets(dhis2_client)
-            source_dataset = datasets.filter(pl.col("id").is_in([source_dataset_uid]))
-            if len(source_dataset) == 0:
-                raise ValueError(f"Source dataset {source_dataset_uid} not found in DHIS2")
-            
-            expected_org_units = source_dataset["organisation_units"].explode().to_list()
-            current_run.log_info(
-                f"Retrieved {len(expected_org_units)} org units "
-                f"from SOURCE_DATASET_UID {source_dataset_uid}"
-            )
-        except Exception as e:
-            error_msg = (
-                f"Failed to retrieve org units from SOURCE_DATASET_UID "
-                f"{source_dataset_uid} for extract {extract_id}: {e!s}"
-            )
-            current_run.log_error(error_msg)
-            logging.error(error_msg)
-            raise RuntimeError(error_msg) from e
-    # Process each period individually (simplified: one period = one file = one computation)
-    for period in exhaustivity_periods:
-        # Check if extract file exists for this period
-        extract_file = extracts_folder / f"data_{period}.parquet"
-        if not extract_file.exists():
-            current_run.log_info(
-                f"Period {period}: no extract file found, skipping "
-                f"(no org units will be pushed for this period)"
-            )
-            continue
-
-        # Compute exhaustivity for this single period only
-        period_exhaustivity_df = compute_exhaustivity(
-            pipeline_path=pipeline_path,
-            extract_id=extract_id,
-            periods=[period],  # Single period only
-            expected_dx_uids=expected_dx_uids,
-            expected_org_units=expected_org_units,  # Pass all org units from dataset for zero-filling
-            extract_config_item=extract_config_item,
-            extracts_folder=extracts_folder,
-        )
-        
-        if len(period_exhaustivity_df) == 0:
-            # If no data for this period, skip it (don't create rows for org units without data)
-            current_run.log_info(
-                f"Period {period}: no data after computation, skipping "
-                f"(no org units will be pushed for this period)"
-            )
-            continue
-
-        # Aggregate to ORG_UNIT level: value = 1 only if all COCs for that org/period are 1
-        period_exhaustivity_org_level = aggregate_to_org_unit_level(period_exhaustivity_df)
-        
-        # Calculate statistics for logging
-        org_unit_stats = calculate_org_unit_statistics(period_exhaustivity_org_level)
-        coc_stats = calculate_coc_statistics(period_exhaustivity_df)
-
-        try:
-            # Write aggregated file in the main processed folder
-            aggregated_file = output_dir / f"exhaustivity_{period}.parquet"
-            save_to_parquet(
-                data=period_exhaustivity_org_level,
-                filename=aggregated_file,
-            )
-            
-            # Enqueue aggregated file for pushing (immediately, per period)
-            push_queue.enqueue(f"{extract_id}|{aggregated_file}")
-            
-            # Clean log with only essential info
-            log_period_statistics(period, org_unit_stats, coc_stats)
-        except Exception as e:
-            current_run.log_error(f"❌ Error saving exhaustivity data for {extract_id} - period {period}: {e!s}")
-            logging.error(f"Exhaustivity saving error: {e!s}")
-            traceback_str = traceback.format_exc()
-            logging.error(f"Full traceback:\n{traceback_str}")
-            raise
-    
-    # No need for EXTRACT_COMPLETE marker - each period is pushed individually as it becomes available
-    
-    current_run.log_info("Exhaustivity computation finished.")
-    return True
 
 
 @dhis2_exhaustivity.task

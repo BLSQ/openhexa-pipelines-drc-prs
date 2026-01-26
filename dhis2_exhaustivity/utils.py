@@ -293,7 +293,11 @@ def get_extract_config(config: dict, extract_id: str) -> dict | None:
     Returns:
         Extract configuration dict or None if not found.
     """
-    for extract in config.get("EXTRACTS", []):
+    extracts_list = config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
+    if not extracts_list:
+        extracts_list = config.get("EXTRACTS", [])
+
+    for extract in extracts_list:
         # Support both EXTRACT_UID (new) and EXTRACT_ID (legacy) for backward compatibility
         if extract.get("EXTRACT_UID") == extract_id or extract.get("EXTRACT_ID") == extract_id:
             return extract
