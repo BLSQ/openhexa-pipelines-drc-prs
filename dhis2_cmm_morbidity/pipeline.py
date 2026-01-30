@@ -421,11 +421,6 @@ def extract_data(
     db_path = pipeline_path / "configuration" / ".queue.db"
     push_queue = Queue(db_path)
 
-    start, end = resolve_extraction_window(extract_config["SETTINGS"])
-    cmm_window = extract_config["SETTINGS"].get("CMM_MONTHS_WINDOW", 6)
-    start_cmm = (datetime.strptime(start, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
-    # consider 6 months in the past to compute current CMM
-
     download_settings = extract_config["SETTINGS"].get("MODE", None)
     if download_settings is None:
         download_settings = "DOWNLOAD_REPLACE"
@@ -441,22 +436,18 @@ def extract_data(
         dhis2_client=dhis2_client, download_mode=download_settings, return_existing_file=False
     )
 
-    current_run.log_info(f"Download MODE: {download_settings} from: {start_cmm} (cmm window) to {end}")
-
+    current_run.log_info(f"Download MODE: {download_settings}")
     handle_data_element_extracts(
         pipeline_path=pipeline_path,
         dhis2_extractor=dhis2_extractor,
         data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
         source_pyramid=source_pyramid,
-        extract_periods=get_periods(start_cmm, end),
     )
 
     compute_cmm_morbidity_indicators(
         pipeline_path=pipeline_path,
-        extract_configurations=cmm_config["EXTRACT_RULES"].get("EXTRACTS", []),
-        cmm_config=cmm_config["RULES"],
-        cmm_window=cmm_window,
-        extract_periods=get_periods(start, end),  # period to compute CMM
+        data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
+        extract_rules=cmm_config["EXTRACT_RULES"].get("EXTRACTS", []),
         push_queue=push_queue,
     )
 
@@ -466,7 +457,6 @@ def handle_data_element_extracts(
     dhis2_extractor: DHIS2Extractor,
     data_element_extracts: list,
     source_pyramid: pd.DataFrame,
-    extract_periods: list[str],
 ):
     """Handles data elements extracts based on the configuration."""
     if len(data_element_extracts) == 0:
@@ -481,6 +471,14 @@ def handle_data_element_extracts(
             extract_id = extract.get("EXTRACT_UID")
             org_units_level = extract.get("ORG_UNITS_LEVEL", None)
             data_element_uids = extract.get("UIDS", [])
+            start = extract.get("START_PERIOD", [])
+            end = extract.get("END_PERIOD", [])
+
+            # get periods
+            start, end = resolve_extraction_window(extract)
+            cmm_window = extract.get("CMM_WINDOW_MONTHS", 6)
+            start_cmm = (datetime.strptime(start, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
+            extract_periods = get_periods(start_cmm, end)
 
             if extract_id is None:
                 current_run.log_warning(
@@ -500,8 +498,8 @@ def handle_data_element_extracts(
             org_units = source_pyramid[source_pyramid["level"] == org_units_level]["id"].to_list()
             current_run.log_info(
                 f"Starting data elements extract ID: '{extract_id}' ({idx + 1}) "
-                f"with {len(data_element_uids)} data elements across {len(org_units)} org units "
-                f"(level {org_units_level})."
+                f"for {len(data_element_uids)} data elements across {len(org_units)} org units "
+                f"(level {org_units_level}) for period: {start_cmm} - {end}."
             )
 
             # run data elements extraction per period
@@ -529,31 +527,38 @@ def handle_data_element_extracts(
 
 def compute_cmm_morbidity_indicators(
     pipeline_path: Path,
-    extract_configurations: list,
-    cmm_config: dict,
-    cmm_window: int,
-    extract_periods: list[str],
+    data_element_extracts: list,
+    extract_rules: list,
     push_queue: Queue,
 ):
     """Computes CMM morbidity indicators based on the extracted data elements."""
-    source_path = pipeline_path / "data" / "extracts" / "data_elements"
-    output_path = pipeline_path / "data" / "extracts" / "data_elements"
-    try:
-        for period in extract_periods:
-            # cmm window + 1 to have the full window available
-            cmm_start = (datetime.strptime(period, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
-            cmm_end = (datetime.strptime(period, "%Y%m") - relativedelta(months=1)).strftime("%Y%m")
-            current_run.log_info(
-                f"Computing CMM for period: {period} - window extracts: {cmm_window} ({cmm_start} to {cmm_end})"
-            )
-            # retrieve the corresponding cmm extract for this period
-            cmm_periods = get_periods(cmm_start, cmm_end)
-            for cmm_period in cmm_periods:
-                # load corresponding extract in polars dataframe
-                extract_path = pl.read_parquet(pipeline_path)
+    data_source_path = pipeline_path / "data" / "extracts" / "data_elements"
+    data_output_path = pipeline_path / "data" / "extracts" / "data_elements"
 
-            # push_queue.enqueue(f"{extract_id}|{extract_path}")
-        # push_queue.enqueue("FINISH")
+    try:
+        for extract in data_element_extracts:
+            start, end = resolve_extraction_window(extract)
+            extract_periods = get_periods(start, end)
+
+            for period in extract_periods:
+                extract_uid = extract.get("EXTRACT_UID")
+                cmm_window = extract.get("CMM_WINDOW_MONTHS", 6)
+                extract_rule = get_rule_extracts(extract_uid, extract_rules)
+
+                cmm_start = (datetime.strptime(period, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
+                cmm_end = (datetime.strptime(period, "%Y%m") - relativedelta(months=1)).strftime("%Y%m")
+                current_run.log_info(
+                    f"Computing CMM period: {period} - window extracts: {cmm_window} ({cmm_start} to {cmm_end})"
+                )
+                # retrieve the corresponding cmm extract for this period
+                cmm_periods = get_periods(cmm_start, cmm_end)
+                for cmm_period in cmm_periods:
+                    # load corresponding extract in polars dataframe
+                    extract_path = pl.read_parquet(pipeline_path)
+
+                # push_queue.enqueue(f"{extract_id}|{extract_path}")
+                #
+
     except Exception as e:
         current_run.log_error(f"Error computing CMM morbidity indicators: {e}")
         raise
@@ -571,13 +576,13 @@ def resolve_extraction_window(settings: dict) -> tuple[str, str]:
     """
     try:
         months_lag = settings.get("NUMBER_MONTHS_WINDOW", 3)
-        if settings.get("STARTDATE"):
-            start = settings["STARTDATE"]
+        if settings.get("START_PERIOD"):
+            start = settings["START_PERIOD"]
         else:
             start = (datetime.now() - relativedelta(months=months_lag)).strftime("%Y%m")
 
-        if settings.get("ENDDATE"):
-            end = settings["ENDDATE"]
+        if settings.get("END_PERIOD"):
+            end = settings["END_PERIOD"]
         else:
             end = (datetime.now() - relativedelta(months=1)).strftime("%Y%m")
 
@@ -585,6 +590,27 @@ def resolve_extraction_window(settings: dict) -> tuple[str, str]:
 
     except Exception as e:
         raise ValueError(f"Invalid STARTDATE / ENDDATE configuration: {e}") from e
+
+
+def get_rule_extracts(extract_uid: str, extract_rules: list) -> list:
+    """Returns the first match of rules for a given extract UID.
+
+    Parameters
+    ----------
+    extract_uid : str
+        The UID of the extract.
+    extract_rules : list
+        The list of all extract rules.
+
+    Returns
+    -------
+    list
+        A list of rules corresponding to the given extract UID.
+    """
+    for rule in extract_rules:
+        if rule.get("EXTRACT_UID") == extract_uid:
+            return rule.get("RULES", [])
+    return []
 
 
 if __name__ == "__main__":
