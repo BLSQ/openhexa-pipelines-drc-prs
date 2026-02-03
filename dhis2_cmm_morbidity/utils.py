@@ -5,8 +5,10 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
+import polars as pl
 import requests
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, workspace
@@ -253,38 +255,52 @@ def get_periods(start: str, end: str) -> list[str]:
         raise Exception(f"Error in start/end date configuration: {e!s}") from e
 
 
-def read_parquet_extract(parquet_file: Path) -> pd.DataFrame:
-    """Reads a Parquet file and returns its contents as a pandas DataFrame.
+def read_parquet_extract(
+    parquet_file: Path,
+    *,
+    engine: Literal["pandas", "polars"] = "pandas",
+) -> pd.DataFrame | pl.DataFrame:
+    """Read a Parquet file using pandas or polars.
 
     Parameters
     ----------
     parquet_file : Path
-        The path to the Parquet file to be read.
+        Path to the Parquet file.
+    engine : {"pandas", "polars"}, default "pandas"
+        Backend used to read the file.
 
     Returns
     -------
-    pd.DataFrame
-        The contents of the Parquet file as a DataFrame.
+    pd.DataFrame | pl.DataFrame
+        Data loaded from the Parquet file.
 
     Raises
     ------
     FileNotFoundError
-        If the specified file does not exist.
-    pd.errors.EmptyDataError
-        If the Parquet file is empty.
-    Exception
-        For any other unexpected errors during reading.
+        If the file does not exist.
+    ValueError
+        If the engine is not supported.
+    RuntimeError
+        For any other error while reading the file.
     """
-    try:
-        ou_source = pd.read_parquet(parquet_file)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Error while loading the extract: File was not found {parquet_file}.") from None
-    except pd.errors.EmptyDataError:
-        raise pd.errors.EmptyDataError(f"Error while loading the extract: File is empty {parquet_file}.") from None
-    except Exception as e:
-        raise RuntimeError(f"Error while loading the extract: {parquet_file}. Error: {e}") from None
+    if not parquet_file.exists():
+        raise FileNotFoundError(
+            f"Error while loading the extract: File was not found {parquet_file}.",
+        )
 
-    return ou_source
+    try:
+        if engine == "pandas":
+            return pd.read_parquet(parquet_file)
+
+        if engine == "polars":
+            return pl.read_parquet(parquet_file)
+
+        raise ValueError(f"Unsupported engine: {engine}")
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Error while loading the extract: {parquet_file}. Error: {e}",
+        ) from None
 
 
 def configure_logging(logs_path: Path, task_name: str) -> Path:

@@ -96,7 +96,7 @@ def dhis2_cmm_morbidity(run_ou_sync: bool, run_extract_data: bool, run_push_data
         # push_ready = push_data(
         #     pipeline_path=pipeline_path,
         #     run_task=run_push_data,
-        #     wait=datasets_ready,
+        #     wait=True,  # datasets_ready, ---- FIX THIS
         # )
 
     except Exception as e:
@@ -430,26 +430,74 @@ def extract_data(
     dhis2_client.data_value_sets.MAX_DATA_ELEMENTS = 100
     dhis2_client.data_value_sets.MAX_ORG_UNITS = 100
 
-    # Setup extractor
-    # See docs about return_existing_file impact.
+    # Setup extractor (See docs about return_existing_file impact)
     dhis2_extractor = DHIS2Extractor(
         dhis2_client=dhis2_client, download_mode=download_settings, return_existing_file=False
     )
 
     current_run.log_info(f"Download MODE: {download_settings}")
-    handle_data_element_extracts(
-        pipeline_path=pipeline_path,
-        dhis2_extractor=dhis2_extractor,
-        data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
-        source_pyramid=source_pyramid,
+    # handle_data_element_extracts( ################################################################################### UNCOMMENT
+    #     pipeline_path=pipeline_path,
+    #     dhis2_extractor=dhis2_extractor,
+    #     data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
+    #     source_pyramid=source_pyramid,
+    # )
+
+    level5_under_zs = get_fosa_descendants_of_zs(
+        source_pyramid, dhis2_client, oug_id=cmm_config.get("OUG_URBAN", "cOK4Feyi0nP")
     )
 
     compute_cmm_morbidity_indicators(
         pipeline_path=pipeline_path,
         data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
-        extract_rules=cmm_config["EXTRACT_RULES"].get("EXTRACTS", []),
+        cmm_extracts=cmm_config.get("EXTRACTS", []),
+        org_units_urban=level5_under_zs,
         push_queue=push_queue,
     )
+
+
+def get_fosa_descendants_of_zs(pyramid: pl.DataFrame, dhis2_client: DHIS2, oug_id: str) -> list:
+    """Retrieves the list of FOSA organisation units that are descendants of urban Zones de sante.
+
+    Parameters
+    ----------
+    pyramid : pl.DataFrame
+        The organisation units pyramid as a Polars DataFrame.
+    dhis2_client : DHIS2
+        The DHIS2 client instance.
+    oug_id : str
+        The organisation unit group ID for urban Zones de sante.
+
+    Returns
+    -------
+    list
+        List of level 5 organisation unit IDs that are descendants of urban Zones de sante.
+    """
+    current_run.log_info(f"Retrieving Organization Units for Urban Health Zones under OUG '{oug_id}'")
+    ou_groups = get_organisation_unit_groups(dhis2_client)
+    zs_urban = ou_groups.filter(pl.col("id") == oug_id)
+    zs_urban_list = zs_urban["organisation_units"].explode().to_list()
+    parent_map = dict(
+        zip(
+            pyramid["id"],
+            pyramid["parent"].apply(lambda x: x["id"] if isinstance(x, dict) else None),
+            strict=True,
+        )
+    )
+    level5 = pyramid[pyramid["level"] == 5]["id"]
+
+    def get_zs_parent(ou: str) -> str | None:
+        """Climb 5 → 4 → 3.
+
+        Returns:
+          level 3 parent of level 5 org unit.
+        """
+        p4 = parent_map.get(ou)
+        if not p4:
+            return None
+        return parent_map.get(p4)
+
+    return [ou for ou in level5 if get_zs_parent(ou) in zs_urban_list]
 
 
 def handle_data_element_extracts(
@@ -528,36 +576,75 @@ def handle_data_element_extracts(
 def compute_cmm_morbidity_indicators(
     pipeline_path: Path,
     data_element_extracts: list,
-    extract_rules: list,
+    cmm_extracts: list,
+    org_units_urban: list,
     push_queue: Queue,
 ):
     """Computes CMM morbidity indicators based on the extracted data elements."""
     data_source_path = pipeline_path / "data" / "extracts" / "data_elements"
-    data_output_path = pipeline_path / "data" / "extracts" / "data_elements"
+    data_output_path = pipeline_path / "data" / "cmm_morbidity"
 
     try:
         for extract in data_element_extracts:
             start, end = resolve_extraction_window(extract)
             extract_periods = get_periods(start, end)
+            extract_uid = extract.get("EXTRACT_UID")
+            cmm_window = extract.get("CMM_WINDOW_MONTHS", 6)
 
             for period in extract_periods:
-                extract_uid = extract.get("EXTRACT_UID")
-                cmm_window = extract.get("CMM_WINDOW_MONTHS", 6)
-                extract_rule = get_rule_extracts(extract_uid, extract_rules)
+                formulas = get_formulas_for_extract(extract_uid, cmm_extracts)
 
                 cmm_start = (datetime.strptime(period, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
                 cmm_end = (datetime.strptime(period, "%Y%m") - relativedelta(months=1)).strftime("%Y%m")
                 current_run.log_info(
                     f"Computing CMM period: {period} - window extracts: {cmm_window} ({cmm_start} to {cmm_end})"
                 )
-                # retrieve the corresponding cmm extract for this period
-                cmm_periods = get_periods(cmm_start, cmm_end)
-                for cmm_period in cmm_periods:
-                    # load corresponding extract in polars dataframe
-                    extract_path = pl.read_parquet(pipeline_path)
 
-                # push_queue.enqueue(f"{extract_id}|{extract_path}")
-                #
+                # retrieve the corresponding cmm extract per period
+                cmm_periods = get_periods(cmm_start, cmm_end)
+                cmm_results = []
+                for cmm_period in cmm_periods:
+                    extract_path = data_source_path / f"extract_{extract_uid}" / f"data_{cmm_period}.parquet"
+
+                    try:
+                        extract_data = read_parquet_extract(extract_path, engine="polars")
+                    except FileNotFoundError:
+                        current_run.log_warning(
+                            f"Extract data file not found: {extract_path.name}, skipping CMM period {period}."
+                        )
+                        break  # skip to next cmm period
+
+                    # Normalize
+                    extract_data = (
+                        extract_data.with_columns(pl.col("VALUE").cast(pl.Float64, strict=False))
+                        .group_by(["DX_UID", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "PERIOD"])
+                        .agg(pl.col("VALUE").max())
+                    )
+
+                    # Calculate CMM all indicators for the period
+                    period_results = apply_formulas_to_extract(extract_data, formulas, ou_urban=org_units_urban)
+                    cmm_results.append(period_results)
+
+                cmm_result_period = pl.concat(cmm_results)
+
+                # compute average over periods and format results
+                mean_result_formatted = (
+                    cmm_result_period.group_by(["ORG_UNIT", "indicator"])
+                    .agg(pl.col("VALUE").mean().alias("VALUE"))
+                    .with_columns(
+                        [pl.lit(period).alias("PERIOD"), pl.col("indicator").str.to_uppercase().alias("INDICATOR")]
+                    )
+                    .select(["PERIOD", "ORG_UNIT", "VALUE", "INDICATOR"])
+                )
+
+                # save results
+                extract_path = data_output_path / f"extract_{extract_uid}" / f"cmm_morbidity_{period}.parquet"
+                extract_path.parent.mkdir(parents=True, exist_ok=True)
+                mean_result_formatted.write_parquet(extract_path)
+                current_run.log_info(f"CMM morbidity indicators saved: {extract_path.name}")
+
+                # queue for push
+                push_queue.enqueue(f"{extract_uid}|{extract_path}")
 
     except Exception as e:
         current_run.log_error(f"Error computing CMM morbidity indicators: {e}")
@@ -592,25 +679,134 @@ def resolve_extraction_window(settings: dict) -> tuple[str, str]:
         raise ValueError(f"Invalid STARTDATE / ENDDATE configuration: {e}") from e
 
 
-def get_rule_extracts(extract_uid: str, extract_rules: list) -> list:
-    """Returns the first match of rules for a given extract UID.
+def get_formulas_for_extract(extract_uid: str, cmm_extracts: list) -> list:
+    """Returns the list of rules for the matching extract UID.
 
     Parameters
     ----------
     extract_uid : str
         The UID of the extract.
-    extract_rules : list
-        The list of all extract rules.
+    cmm_extracts : list
+        The list of all cmm extract formulas.
 
     Returns
     -------
     list
         A list of rules corresponding to the given extract UID.
     """
-    for rule in extract_rules:
+    for rule in cmm_extracts:
         if rule.get("EXTRACT_UID") == extract_uid:
-            return rule.get("RULES", [])
+            return rule.get("FORMULAS", [])
     return []
+
+
+def apply_formulas_to_extract(
+    extract_data: pl.DataFrame,
+    extract_formulas: list,
+    ou_urban: list,
+) -> pl.DataFrame:
+    """Applies the given rules to the extract data and computes the results.
+
+    Parameters
+    ----------
+    extract_data : pl.DataFrame
+        The extract data as a Polars DataFrame.
+    extract_formulas : list
+        The list of rules to apply.
+    ou_urban : list, optional
+        A list of org units which are considered Urban.
+
+    Returns
+    -------
+    pl.DataFrame
+        The resulting DataFrame after applying the rules.
+    """
+    results = []
+    for indicator, formula in extract_formulas.items():
+        expr = build_expr(formula, ou_urban=ou_urban)
+
+        df = (
+            extract_data.group_by(["PERIOD", "ORG_UNIT"])
+            # .agg(expr.alias("VALUE"))
+            .agg(expr.sum().alias("VALUE"))
+            .with_columns(pl.lit(indicator).alias("indicator"))
+        )
+
+        results.append(df)
+
+    return pl.concat(results)
+
+
+def build_expr(node: dict, ou_urban: list) -> pl.Expr:
+    """Recursively builds a Polars expression from a formula node.
+
+    Parameters
+    ----------
+    node : dict
+        A dictionary representing a formula node, which can be a data element, sum, multiply, or constant.
+    ou_urban : list
+        A list of org units which are considered Urban.
+
+    Returns
+    -------
+    pl.Expr
+        A Polars expression representing the computation defined by the node.
+
+    Raises
+    ------
+    NotImplementedError
+        If the node type is not supported.
+    """
+    if ou_urban is None:
+        ou_urban = []
+
+    # Leaf: data element
+    if "dataElement" in node:
+        return (
+            pl.when(
+                (pl.col("DX_UID") == node["dataElement"])
+                & (pl.col("CATEGORY_OPTION_COMBO") == node["categoryOptionCombo"])
+            )
+            .then(pl.col("VALUE"))
+            .otherwise(0)
+        )
+
+    node_type = node["type"]
+
+    if node_type == "sum":
+        return sum(build_expr(item, ou_urban) for item in node["items"])
+
+    if node_type == "multiply":
+        return build_expr(node["left"], ou_urban) * build_expr(node["right"], ou_urban)
+
+    if node_type == "constant":
+        return pl.lit(node["value"])
+
+    if node_type == "if":
+        cond = build_condition(node["condition"], ou_check=ou_urban)
+        return pl.when(cond).then(build_expr(node["then"], ou_urban)).otherwise(build_expr(node["else"], ou_urban))
+
+    raise NotImplementedError(f"Unsupported node type: {node_type}")
+
+
+def build_condition(cond: dict, ou_check: list) -> pl.Expr | None:
+    """Build a Polars expression for a given condition.
+
+    Parameters
+    ----------
+    cond : dict
+        The condition dictionary.
+    ou_check : list
+        A list of org units.
+
+    Returns
+    -------
+    pl.Expr | None
+        The Polars expression representing the condition, or None if not applicable.
+    """
+    if cond["type"] == "orgUnitInGroupDescendant":
+        return pl.col("ORG_UNIT").is_in(ou_check)
+    return None
 
 
 if __name__ == "__main__":
