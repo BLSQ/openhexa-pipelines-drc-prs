@@ -33,7 +33,7 @@ from utils import (
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
 
-@pipeline("dhis2_cmm_morbidity", timeout=43200)  # 3600 * 12 hours
+@pipeline("dhis2_cmm_morbidity", timeout=21600)  # 3600 * 6 hours
 @parameter(
     code="run_ou_sync",
     name="Run org units sync (recommended)",
@@ -76,27 +76,27 @@ def dhis2_cmm_morbidity(run_ou_sync: bool, run_extract_data: bool, run_push_data
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_cmm_morbidity"
 
     try:
-        # pyramid_ready = sync_organisation_units(
-        #     pipeline_path=pipeline_path,
-        #     run_task=run_ou_sync,
-        # )
+        pyramid_ready = sync_organisation_units(
+            pipeline_path=pipeline_path,
+            run_task=run_ou_sync,
+        )
 
-        # ou_groups_ready = sync_organisation_unit_groups(
-        #     pipeline_path=pipeline_path,
-        #     run_task=run_ou_sync,  # only run if OU sync ran
-        #     wait=pyramid_ready,
-        # )
+        ou_groups_ready = sync_organisation_unit_groups(
+            pipeline_path=pipeline_path,
+            run_task=run_ou_sync,  # only run if OU sync ran
+            wait=pyramid_ready,
+        )
 
-        # extract_data(
-        #     pipeline_path=pipeline_path,
-        #     run_task=run_extract_data,
-        #     wait=ou_groups_ready,
-        # )
+        extract_data(
+            pipeline_path=pipeline_path,
+            run_task=run_extract_data,
+            wait=ou_groups_ready,
+        )
 
         push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
-            wait=True,  # ou_groups_ready, ---- FIX THIS
+            wait=ou_groups_ready,
         )
 
     except Exception as e:
@@ -104,7 +104,7 @@ def dhis2_cmm_morbidity(run_ou_sync: bool, run_extract_data: bool, run_push_data
         raise
 
 
-# @dhis2_cmm_morbidity.task
+@dhis2_cmm_morbidity.task
 def sync_organisation_units(
     pipeline_path: Path,
     run_task: bool = True,
@@ -253,7 +253,7 @@ def extract_pyramid(
         raise Exception(f"Error while extracting DHIS2 Pyramid: {e}") from e
 
 
-# @dhis2_cmm_morbidity.task
+@dhis2_cmm_morbidity.task
 def sync_organisation_unit_groups(
     pipeline_path: Path,
     run_task: bool = True,
@@ -396,7 +396,7 @@ def sync_org_units_groups(
     return update_response
 
 
-# @dhis2_cmm_morbidity.task
+@dhis2_cmm_morbidity.task
 def extract_data(
     pipeline_path: Path,
     run_task: bool = True,
@@ -836,7 +836,7 @@ def compute_mean_and_format_results(period_results: pl.DataFrame, period: str) -
     )
 
 
-# @dhis2_dataset_sync.task
+@dhis2_cmm_morbidity.task
 def push_data(
     pipeline_path: Path,
     run_task: bool = True,
