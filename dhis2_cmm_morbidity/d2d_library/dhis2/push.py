@@ -117,7 +117,7 @@ class DHIS2Pusher:
         data_point_list: list[dict],
         logging_interval: int = 50000,
     ) -> None:
-        """dry_run: This parameter can be set to true to get an import summary without actually importing data (DHIS2)."""
+        """dry_run: Set to true to get an import summary without actually importing data (DHIS2)."""
         self._reset_summary()
         total_data_points = len(data_point_list)
         processed_points = 0
@@ -152,7 +152,7 @@ class DHIS2Pusher:
                 else:
                     # No response JSON, at least log the request error msg
                     self.summary["ERRORS"].append(
-                        [f"Request error for period: {chunk[0].get('period', '')} with exception: {str(e)}"]
+                        [f"Request error for period: {chunk[0].get('period', '')} with exception: {e!s}"]
                     )
                 self._extract_conflicts(response)
 
@@ -160,12 +160,14 @@ class DHIS2Pusher:
             # Log every logging_interval points
             if processed_points // logging_interval > (processed_points - len(chunk)) // logging_interval:
                 current_run.log_info(
-                    f"{processed_points} / {total_data_points} data points pushed summary: {self.summary['import_counts']}"
+                    f"{processed_points} / {total_data_points} data "
+                    f"points pushed summary: {self.summary['import_counts']}"
                 )
 
         # Final summary
         current_run.log_info(
-            f"{processed_points} / {total_data_points} data points processed. Final summary: {self.summary['import_counts']}"
+            f"{processed_points} / {total_data_points} data points processed. "
+            f"Final summary: {self.summary['import_counts']}"
         )
 
     def _reset_summary(self) -> None:
@@ -206,30 +208,24 @@ class DHIS2Pusher:
             self.summary["import_counts"][key] += import_counts.get(key, 0)
 
     def _extract_conflicts(self, response: dict) -> None:
-        """Extract all conflicts and errorReports from a DHIS2 API response, handling
-        both top-level and nested 'response' nodes. Optionally updates the summary.
+        """Append conflicts to self.summary["ERRORS"] from a DHIS2 API response.
 
-        Parameters
-        ----------
-        response : dict
-            The JSON response from DHIS2 after an import.
-
-        Returns
-        -------
-        list
-            A list of all conflicts and errorReports, empty if none found.
+        Handles both top-level and nested 'response' nodes.
         """
         if not response:
-            return []
+            return
 
-        conflicts = response.get("conflicts", [])
-        error_reports = response.get("errorReports", [])
+        all_errors = []
 
-        # Check if nested under "response"
-        nested = response.get("response", {})
-        conflicts += nested.get("conflicts", [])
-        error_reports += nested.get("errorReports", [])
-        all_errors = conflicts + error_reports
+        # Top-level
+        all_errors.extend(response.get("conflicts", []))
+        all_errors.extend(response.get("errorReports", []))
+
+        # Nested under "response"
+        nested = response.get("response")
+        if isinstance(nested, dict):
+            all_errors.extend(nested.get("conflicts", []))
+            all_errors.extend(nested.get("errorReports", []))
 
         if all_errors:
             self.summary.setdefault("ERRORS", []).extend(all_errors)

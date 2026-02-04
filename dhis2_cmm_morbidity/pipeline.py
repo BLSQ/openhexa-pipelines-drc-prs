@@ -81,23 +81,23 @@ def dhis2_cmm_morbidity(run_ou_sync: bool, run_extract_data: bool, run_push_data
         #     run_task=run_ou_sync,
         # )
 
-        # datasets_ready = sync_organisation_unit_groups(
+        # ou_groups_ready = sync_organisation_unit_groups(
         #     pipeline_path=pipeline_path,
         #     run_task=run_ou_sync,  # only run if OU sync ran
         #     wait=pyramid_ready,
         # )
 
-        extract_data(
-            pipeline_path=pipeline_path,
-            run_task=run_extract_data,
-            wait=True,  # datasets_ready, ---- FIX THIS
-        )
-
-        # push_ready = push_data(
+        # extract_data(
         #     pipeline_path=pipeline_path,
-        #     run_task=run_push_data,
-        #     wait=True,  # datasets_ready, ---- FIX THIS
+        #     run_task=run_extract_data,
+        #     wait=ou_groups_ready,
         # )
+
+        push_data(
+            pipeline_path=pipeline_path,
+            run_task=run_push_data,
+            wait=True,  # ou_groups_ready, ---- FIX THIS
+        )
 
     except Exception as e:
         current_run.log_error(f"An error occurred: {e}")
@@ -436,12 +436,12 @@ def extract_data(
     )
 
     current_run.log_info(f"Download MODE: {download_settings}")
-    # handle_data_element_extracts( ################################################################################### UNCOMMENT
-    #     pipeline_path=pipeline_path,
-    #     dhis2_extractor=dhis2_extractor,
-    #     data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
-    #     source_pyramid=source_pyramid,
-    # )
+    handle_data_element_extracts(
+        pipeline_path=pipeline_path,
+        dhis2_extractor=dhis2_extractor,
+        data_element_extracts=extract_config["DATA_ELEMENTS"].get("EXTRACTS", []),
+        source_pyramid=source_pyramid,
+    )
 
     level5_under_zs = get_fosa_descendants_of_zs(
         source_pyramid, dhis2_client, oug_id=cmm_config.get("OUG_URBAN", "cOK4Feyi0nP")
@@ -612,35 +612,26 @@ def compute_cmm_morbidity_indicators(
                         current_run.log_warning(
                             f"Extract data file not found: {extract_path.name}, skipping CMM period {period}."
                         )
-                        break  # skip to next cmm period
+                        cmm_results = []
+                        break
 
-                    # Normalize
-                    extract_data = (
-                        extract_data.with_columns(pl.col("VALUE").cast(pl.Float64, strict=False))
-                        .group_by(["DX_UID", "CATEGORY_OPTION_COMBO", "ORG_UNIT", "PERIOD"])
-                        .agg(pl.col("VALUE").max())
-                    )
+                    # To numeric
+                    extract_data = extract_data.with_columns(pl.col("VALUE").cast(pl.Float64, strict=False))
 
-                    # Calculate CMM all indicators for the period
+                    # Calculate CMM indicators for period
                     period_results = apply_formulas_to_extract(extract_data, formulas, ou_urban=org_units_urban)
                     cmm_results.append(period_results)
 
-                cmm_result_period = pl.concat(cmm_results)
+                if cmm_results == []:
+                    break  # skip to next extract
 
-                # compute average over periods and format results
-                mean_result_formatted = (
-                    cmm_result_period.group_by(["ORG_UNIT", "indicator"])
-                    .agg(pl.col("VALUE").mean().alias("VALUE"))
-                    .with_columns(
-                        [pl.lit(period).alias("PERIOD"), pl.col("indicator").str.to_uppercase().alias("INDICATOR")]
-                    )
-                    .select(["PERIOD", "ORG_UNIT", "VALUE", "INDICATOR"])
-                )
+                cmm_result_period = pl.concat(cmm_results)
+                cmm_morbidity = compute_mean_and_format_results(cmm_result_period, period)
 
                 # save results
                 extract_path = data_output_path / f"extract_{extract_uid}" / f"cmm_morbidity_{period}.parquet"
                 extract_path.parent.mkdir(parents=True, exist_ok=True)
-                mean_result_formatted.write_parquet(extract_path)
+                cmm_morbidity.write_parquet(extract_path)
                 current_run.log_info(f"CMM morbidity indicators saved: {extract_path.name}")
 
                 # queue for push
@@ -807,6 +798,223 @@ def build_condition(cond: dict, ou_check: list) -> pl.Expr | None:
     if cond["type"] == "orgUnitInGroupDescendant":
         return pl.col("ORG_UNIT").is_in(ou_check)
     return None
+
+
+def compute_mean_and_format_results(period_results: pl.DataFrame, period: str) -> pl.DataFrame:
+    """Computes the mean of indicator values for each organisation unit and formats the results for output.
+
+    Returns
+    -------
+    pl.DataFrame
+        Formatted DataFrame with mean values and required columns for output.
+    """
+    return (
+        period_results.group_by(["ORG_UNIT", "indicator"])
+        .agg(pl.col("VALUE").mean().alias("VALUE"))
+        .with_columns(
+            [
+                pl.lit("CMM_INDICATOR").alias("DATA_TYPE"),
+                pl.lit(period).alias("PERIOD"),
+                pl.lit(None).alias("DX_UID"),
+                pl.lit(None).alias("CATEGORY_OPTION_COMBO"),
+                pl.lit(None).alias("ATTRIBUTE_OPTION_COMBO"),
+                pl.col("indicator").str.to_uppercase().alias("INDICATOR"),
+            ]
+        )
+        .select(
+            [
+                "DATA_TYPE",
+                "DX_UID",
+                "PERIOD",
+                "CATEGORY_OPTION_COMBO",
+                "ATTRIBUTE_OPTION_COMBO",
+                "ORG_UNIT",
+                "VALUE",
+                "INDICATOR",
+            ]
+        )
+    )
+
+
+# @dhis2_dataset_sync.task
+def push_data(
+    pipeline_path: Path,
+    run_task: bool = True,
+    wait: bool = True,
+) -> None:
+    """Pushes data elements to the target DHIS2 instance."""
+    if not run_task:
+        current_run.log_info("Data push task skipped.")
+
+    current_run.log_info("Starting data push.")
+
+    # setup
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="push_data")
+    config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
+    target_dhis2 = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
+    db_path = pipeline_path / "configuration" / ".queue.db"
+    push_queue = Queue(db_path)
+
+    # Push parameters
+    import_strategy = config["SETTINGS"].get("IMPORT_STRATEGY", "CREATE_AND_UPDATE")
+    dry_run = config["SETTINGS"].get("DRY_RUN", True)
+    max_post = config["SETTINGS"].get("MAX_POST", 500)
+    push_wait = config["SETTINGS"].get("PUSH_WAIT_MINUTES", 5)
+
+    # log parameters
+    logger.info(f"Import strategy: {import_strategy} - Dry Run: {dry_run} - Max Post elements: {max_post}")
+    current_run.log_info(
+        f"Pushing data with parameters import_strategy: {import_strategy}, dry_run: {dry_run}, max_post: {max_post}"
+    )
+
+    # Set up DHIS2 pusher
+    pusher = DHIS2Pusher(
+        dhis2_client=target_dhis2,
+        import_strategy=import_strategy,
+        dry_run=dry_run,
+        max_post=max_post,
+        logger=logger,
+    )
+
+    # Map data types to their respective mapping functions
+    # NOTE: cmm specific mappings
+    dispatch_map = {
+        "CMM_INDICATOR": (config["CMM_INDICATORS"]["EXTRACTS"], apply_cmm_indicators_extract_config),
+    }
+
+    # loop over the queue
+    while True:
+        next_extract = push_queue.peek()
+        if next_extract == "FINISH":
+            push_queue.dequeue()  # remove marker if present
+            break
+
+        if not next_extract:
+            current_run.log_info("Push data process: waiting for updates")
+            time.sleep(60 * int(push_wait))
+            continue
+
+        try:
+            # Read extract
+            extract_id, extract_file_path = split_on_pipe(next_extract)
+            extract_path = Path(extract_file_path)
+            extract_data = read_parquet_extract(parquet_file=extract_path)
+        except Exception as e:
+            current_run.log_error(f"Failed to read extract from queue item: {next_extract}. Error: {e}")
+            push_queue.dequeue()  # remove problematic item
+            continue
+
+        try:
+            # Determine data type
+            data_type = extract_data["DATA_TYPE"].unique()[0]
+            current_run.log_info(f"Pushing data for extract {extract_id}: {extract_path.name}.")
+            if data_type not in dispatch_map:
+                current_run.log_warning(f"Unknown DATA_TYPE '{data_type}' in extract: {extract_path.name}. Skipping.")
+                push_queue.dequeue()  # remove unknown item
+                continue
+
+            # Get config and mapping function
+            cfg_list, mapper_func = dispatch_map[data_type]
+            extract_config = next((e for e in cfg_list if e["EXTRACT_UID"] == extract_id), {})
+
+            # Apply mapping and push data
+            df_mapped: pd.DataFrame = mapper_func(df=extract_data, extract_config=extract_config)
+            pusher.push_data(df_data=df_mapped)
+
+            # Success → dequeue
+            push_queue.dequeue()
+            current_run.log_info(f"Data push finished for extract: {extract_path.name}.")
+
+        except Exception as e:
+            current_run.log_error(
+                f"Fatal error for extract {extract_id} ({extract_path.name}), stopping push process. Error: {e!s}"
+            )
+            raise  # crash on error
+
+        finally:
+            save_logs(logs_file, output_dir=pipeline_path / "logs" / "push")
+
+
+def split_on_pipe(s: str) -> tuple[str, str | None]:
+    """Splits a string on the first pipe character and returns a tuple.
+
+    Parameters
+    ----------
+    s : str
+        The string to split.
+
+    Returns
+    -------
+    tuple[str, str | None]
+        A tuple containing the part before the pipe and the part after the pipe (or None if no pipe is found).
+    """
+    parts = s.split("|", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return None, parts[0]
+
+
+def apply_cmm_indicators_extract_config(
+    df: pd.DataFrame, extract_config: dict, logger: logging.Logger | None = None
+) -> pd.DataFrame:
+    """Applies data element mappings to the CMM indicators.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing the extracted data.
+    extract_config : dict
+        This is a dictionary containing the extract mappings.
+    logger : logging.Logger, optional
+        Logger instance for logging (default is None).
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with mapped data elements.
+    """
+    if len(extract_config) == 0:
+        current_run.log_warning("No extract details provided, skipping data element mappings.")
+        return df
+
+    extract_mappings = extract_config.get("MAPPINGS", {})
+    if len(extract_mappings) == 0:
+        current_run.log_warning("No extract mappings provided, skipping data element mappings.")
+        return df
+
+    # Loop over the configured data element mappings to filter by COC/AOC if provided
+    current_run.log_info(f"Applying data element mappings for extract: {extract_config.get('EXTRACT_UID')}.")
+    chunks = []
+    for uid, mapping in extract_mappings.items():
+        uid_mapping = mapping.get("DX_UID")
+        coc_mapping = mapping.get("CATEGORY_OPTION_COMBO")
+        aoc_mapping = mapping.get("ATTRIBUTE_OPTION_COMBO")
+
+        # select indicator data
+        df_indicator = df[df["INDICATOR"] == uid].copy()
+        if coc_mapping:
+            df_indicator["CATEGORY_OPTION_COMBO"] = coc_mapping.strip()
+
+        if aoc_mapping:
+            df_indicator["ATTRIBUTE_OPTION_COMBO"] = aoc_mapping.strip()
+
+        if uid_mapping:
+            df_indicator["DX_UID"] = uid_mapping.strip()
+
+        chunks.append(df_indicator)
+
+    if len(chunks) == 0:
+        current_run.log_warning("No data elements matched the provided mappings, returning empty dataframe.")
+        logger.warning("No data elements matched the provided mappings, returning empty dataframe.")
+        return pd.DataFrame(columns=df.columns)
+
+    df_mapped = pd.concat(chunks, ignore_index=True)
+    df_mapped["VALUE"] = (
+        df_mapped["VALUE"]
+        .where(df_mapped["VALUE"].abs() >= 1e-9, 0)  # kill float noise
+        .round(4)  # round to 4 decimal places
+    )
+    return df_mapped.sort_values(by="ORG_UNIT")
 
 
 if __name__ == "__main__":
