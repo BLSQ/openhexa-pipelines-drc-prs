@@ -469,13 +469,15 @@ def push_dataset_org_units(
     target_ous = target_dataset["organisation_units"].explode().to_list()
 
     # here first check if the list of ids is different
-    new_org_units = set(source_ous) - set(target_ous)
-    if len(new_org_units) == 0:
+    to_add = set(source_ous) - set(target_ous)  # missing in target
+    to_remove = set(target_ous) - set(source_ous)  # extra in target
+    diff_org_units = to_add | to_remove
+    if len(diff_org_units) == 0:
         current_run.log_info("Source and target dataset organisation units are in sync, no update needed.")
         return {"status": "skipped", "message": "No update needed, org units are identical."}
 
     current_run.log_info(
-        f"Found {len(new_org_units)} new org units to add to target dataset "
+        f"Found {len(diff_org_units)} new org units to add to target dataset "
         f"'{target_dataset['name'].item()}' ({target_dataset_id})."
     )
 
