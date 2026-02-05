@@ -1,5 +1,4 @@
 import logging
-import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +13,6 @@ from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
 from openhexa.toolbox.dhis2.dataframe import get_organisation_unit_groups
-from requests.exceptions import HTTPError, RequestException
 from utils import (
     configure_logging_flush,
     connect_to_dhis2,
