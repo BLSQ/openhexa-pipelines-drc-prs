@@ -5,7 +5,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 import polars as pl
@@ -384,7 +384,7 @@ def read_json_file(file_path: Path) -> dict:
         raise Exception(f"Unexpected error while reading the file '{file_path}': {e}") from e
 
 
-def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: any) -> dict:
+def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: Any) -> dict:
     """Wrapper around requests to handle DHIS2 GET/PUT with error handling.
 
     Parameters
