@@ -716,7 +716,6 @@ def apply_formulas_to_extract(
 
         df = (
             extract_data.group_by(["PERIOD", "ORG_UNIT"])
-            # .agg(expr.alias("VALUE"))
             .agg(expr.sum().alias("VALUE"))
             .with_columns(pl.lit(indicator).alias("indicator"))
         )
