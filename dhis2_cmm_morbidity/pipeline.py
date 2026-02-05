@@ -31,7 +31,7 @@ from utils import (
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
 
-@pipeline("dhis2_cmm_morbidity", timeout=21600)  # 3600 * 6 hours
+@pipeline("dhis2_cmm_morbidity", timeout=21600)  # 3600 seconds * 6
 @parameter(
     code="run_ou_sync",
     name="Run org units sync (recommended)",
