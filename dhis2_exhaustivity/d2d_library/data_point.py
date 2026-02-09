@@ -1,5 +1,5 @@
 class DataPoint:
-    """Helper class definition to store/create the correct DataElement JSON format for exhaustivity push."""
+    """Helper class definition to store/create the correct DataElement JSON format."""
 
     def __init__(self, row: dict):
         """Create a new data point instance.
@@ -7,15 +7,16 @@ class DataPoint:
         Parameters
         ----------
         row : dict
-            Dictionary with keys: ['DX_UID', 'PERIOD', 'ORG_UNIT', 'VALUE',
-            'CATEGORY_OPTION_COMBO', 'ATTRIBUTE_OPTION_COMBO']
+            Dictionary with keys:
+                ['DX_UID', 'PERIOD', 'ORG_UNIT', 'VALUE',
+                'CATEGORY_OPTION_COMBO', 'ATTRIBUTE_OPTION_COMBO']
         """
         self.dataElement = row.get("DX_UID")
         self.period = row.get("PERIOD")
         self.orgUnit = row.get("ORG_UNIT")
-        self.value = row.get("VALUE")
         self.categoryOptionCombo = row.get("CATEGORY_OPTION_COMBO")
         self.attributeOptionCombo = row.get("ATTRIBUTE_OPTION_COMBO")
+        self.value = row.get("VALUE")
 
     def to_json(self) -> dict:
         """Return a dictionary representation of the data point suitable for DHIS2 JSON format.
@@ -68,4 +69,4 @@ class DataPoint:
         return self._check_attributes(exclude_value=True) and self.value is None
 
     def __str__(self) -> str:
-        return f"DataPoint(dx:{self.dataElement} pe:{self.period} ou:{self.orgUnit} val:{self.value})"
+        return f"DataPoint(id:{self.dataElement} pe:{self.period} ou:{self.orgUnit} value:{self.value})"
