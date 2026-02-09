@@ -243,16 +243,13 @@ def get_periods(start: str, end: str) -> list[str]:
     list[str]
         List of period strings from start to end.
     """
-    try:
-        start_period = period_from_string(start)
-        end_period = period_from_string(end)
-        return (
-            [str(p) for p in start_period.get_range(end_period)]
-            if str(start_period) < str(end_period)
-            else [str(start_period)]
-        )
-    except Exception as e:
-        raise Exception(f"Error in start/end date configuration: {e!s}") from e
+    start_period = period_from_string(start)
+    end_period = period_from_string(end)
+
+    if start_period > end_period:
+        raise ValueError(f"start period {start} must be <= end period {end}")
+
+    return [str(p) for p in start_period.get_range(end_period)]
 
 
 def read_parquet_extract(
