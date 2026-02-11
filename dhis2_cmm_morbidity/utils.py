@@ -1,9 +1,10 @@
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -243,13 +244,34 @@ def get_periods(start: str, end: str) -> list[str]:
     list[str]
         List of period strings from start to end.
     """
+    # Validate and convert inputs to real dates
+    start_date = parse_period(start)
+    end_date = parse_period(end)
+    if start_date > end_date:
+        raise ValueError(f"start period {start} must be <= end period {end}")
+
     start_period = period_from_string(start)
     end_period = period_from_string(end)
 
-    if start_period > end_period:
-        raise ValueError(f"start period {start} must be <= end period {end}")
-
     return [str(p) for p in start_period.get_range(end_period)]
+
+
+def parse_period(period: str) -> date:
+    """Convert a YYYYMM string into a comparable date (first day of month).
+
+    Returns:
+        date: A date object representing the first day of the month for the given period.
+    """
+    if not re.fullmatch(r"\d{6}", period):
+        raise ValueError(f"Invalid period format: {period}. Expected YYYYMM.")
+
+    year = int(period[:4])
+    month = int(period[4:6])
+
+    if not 1 <= month <= 12:
+        raise ValueError(f"Invalid month in period: {period}")
+
+    return date(year, month, 1)
 
 
 def read_parquet_extract(
