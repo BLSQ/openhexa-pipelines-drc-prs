@@ -7,11 +7,7 @@ from pathlib import Path
 import polars as pl
 from openhexa.sdk import current_run
 
-from utils import (
-    get_extract_config,
-    load_drug_mapping,
-    load_pipeline_config,
-)
+from utils import get_mapping_file_for_extract, load_drug_mapping, load_pipeline_config
 
 logger = logging.getLogger(__name__)
 
@@ -137,11 +133,13 @@ def compute_exhaustivity(
             })
         else:
             if missing_extracts:
+                available_count = len(periods) - len(missing_extracts)
                 safe_log_info(
-                    f"ℹ️  Expected {len(periods)} parquet files, but {len(missing_extracts)} period(s) have no data in DHIS2: "
+                    f"Expected {len(periods)} parquet files, "
+                    f"but {len(missing_extracts)} period(s) have no data in DHIS2: "
                     f"{sorted(missing_extracts)}. "
-                    f"Computing exhaustivity with available {len(periods) - len(missing_extracts)} period(s). "
-                    f"Missing periods will be filled with exhaustivity=0 (normal if data doesn't exist yet in DHIS2)."
+                    f"Computing exhaustivity with available {available_count} period(s). "
+                    f"Missing periods will be filled with exhaustivity=0."
                 )
         
         try:
@@ -294,11 +292,10 @@ def compute_exhaustivity(
         if pipeline_path:
             try:
                 config_dir = pipeline_path / "configuration"
-                pipeline_config = load_pipeline_config(config_dir)
+                _pipeline_config = load_pipeline_config(config_dir)  # validates config exists
                 
-                # Load drug mapping file directly (hardcoded path based on extract_id)
-                mapping_prefix = extract_id.split("_")[0].lower()  # e.g., "Fosa" from "Fosa_exhaustivity_data_elements"
-                mapping_file = f"drug_mapping_{mapping_prefix}.json"
+                # Get mapping file for this extract
+                mapping_file = get_mapping_file_for_extract(extract_id)
                 extract_mappings, _ = load_drug_mapping(config_dir, mapping_file)
                 if extract_mappings:
                     safe_log_info(
@@ -306,7 +303,7 @@ def compute_exhaustivity(
                         f"from {mapping_file} for {extract_id}"
                     )
                 else:
-                    safe_log_warning(f"Extract {extract_id} not found in pipeline_config")
+                    safe_log_warning(f"No mappings found in {mapping_file} for {extract_id}")
             except Exception as e:
                 safe_log_warning(f"Could not load mappings: {e!s}")
         
@@ -685,7 +682,7 @@ def compute_exhaustivity(
                 elif missing_periods:
                     # Periods without parquet files (no data in DHIS2) - this is normal
                     safe_log_info(
-                        f"ℹ️  {len(missing_periods)} period(s) have no data in DHIS2 "
+                        f"[INFO] {len(missing_periods)} period(s) have no data in DHIS2 "
                         f"(no parquet files created): {sorted(list(missing_periods))}. "
                         f"This is normal if data doesn't exist yet in DHIS2."
                     )

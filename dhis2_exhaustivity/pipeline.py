@@ -15,10 +15,12 @@ from openhexa.toolbox.dhis2 import DHIS2
 from openhexa.toolbox.dhis2.dataframe import get_datasets
 from openhexa.toolbox.dhis2.periods import period_from_string
 from utils import (
+    DEFAULT_COC_AOC,
     configure_logging,
     connect_to_dhis2,
     dhis2_request,
     get_extract_config,
+    get_mapping_file_for_extract,
     load_drug_mapping,
     load_pipeline_config,
     push_dataset_org_units,
@@ -232,10 +234,7 @@ def handle_data_element_extracts(
             )
 
             # Prepare exhaustivity context for this extract (compute will run per period)
-            # Load drug mapping file directly (hardcoded path based on extract_id)
-            expected_dx_uids = None
-            mapping_prefix = extract_id.split("_")[0].lower()  # e.g., "Fosa" from "Fosa_exhaustivity_data_elements"
-            mapping_file = f"drug_mapping_{mapping_prefix}.json"
+            mapping_file = get_mapping_file_for_extract(extract_id)
             _, expected_dx_uids = load_drug_mapping(pipeline_path / "configuration", mapping_file)
             
             # Output directory for processed exhaustivity files
@@ -746,13 +745,11 @@ def process_period_file(
             return
         
         # Map to DHIS2 format with default COC/AOC
-        default_coc = "HllvX50cXC0"
-        default_aoc = "HllvX50cXC0"
         df_mapped = df.with_columns([
             pl.lit(target_data_element_uid).alias("DX_UID"),
             pl.col("EXHAUSTIVITY_VALUE").cast(pl.Utf8).alias("VALUE"),
-            pl.lit(default_coc).alias("CATEGORY_OPTION_COMBO"),
-            pl.lit(default_aoc).alias("ATTRIBUTE_OPTION_COMBO"),
+            pl.lit(DEFAULT_COC_AOC).alias("CATEGORY_OPTION_COMBO"),
+            pl.lit(DEFAULT_COC_AOC).alias("ATTRIBUTE_OPTION_COMBO"),
         ]).select([
             "DX_UID", "PERIOD", "ORG_UNIT", "CATEGORY_OPTION_COMBO", "ATTRIBUTE_OPTION_COMBO", "VALUE"
         ])

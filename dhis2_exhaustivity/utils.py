@@ -159,9 +159,8 @@ def validate_drug_mapping_files(pipeline_path: Path) -> None:
             )
             continue
         
-        # Load drug mapping file directly (hardcoded path based on extract_id)
-        mapping_prefix = extract_id.split("_")[0].lower()  # e.g., "Fosa" from "Fosa_exhaustivity_data_elements"
-        mapping_file = f"drug_mapping_{mapping_prefix}.json"
+        # Get mapping file path for this extract
+        mapping_file = get_mapping_file_for_extract(extract_id)
         mapping_path = config_dir / mapping_file
         
         if not mapping_path.exists():
@@ -348,6 +347,31 @@ def configure_logging(logs_path: Path, task_name: str):
         level=logging.INFO,
         format="%(asctime)s - %(message)s",
     )
+
+
+# Default DHIS2 Category Option Combo and Attribute Option Combo
+# This is the standard "default" value used when no specific COC/AOC is needed
+DEFAULT_COC_AOC = "HllvX50cXC0"
+
+
+def get_mapping_file_for_extract(extract_id: str) -> str:
+    """Get the drug mapping filename for an extract based on its ID.
+    
+    The mapping file is determined by the prefix of the extract_id.
+    For example: "Fosa_exhaustivity_data_elements" -> "drug_mapping_fosa.json"
+    
+    Parameters
+    ----------
+    extract_id : str
+        The extract identifier (e.g., "Fosa_exhaustivity_data_elements").
+    
+    Returns
+    -------
+    str
+        The mapping filename (e.g., "drug_mapping_fosa.json").
+    """
+    mapping_prefix = extract_id.split("_")[0].lower()
+    return f"drug_mapping_{mapping_prefix}.json"
 
 
 def load_drug_mapping(config_dir: Path, mapping_file: str) -> tuple[dict, list]:
