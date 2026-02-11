@@ -1,7 +1,7 @@
 import json
 import logging
 
-import polars as pl
+import pandas as pd
 import requests
 from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2 import DHIS2
@@ -30,7 +30,7 @@ class DHIS2Pusher:
 
     def push_data(
         self,
-        df_data: pl.DataFrame,
+        df_data: pd.DataFrame,
     ) -> None:
         """Push formatted data to DHIS2."""
         valid, to_delete, to_ignore = self._classify_data_points(df_data)
@@ -39,20 +39,20 @@ class DHIS2Pusher:
         self._push_removals(to_delete)
         self._log_ignored_or_na(to_ignore)
 
-    def _classify_data_points(self, data_values: pl.DataFrame) -> tuple[list, list, list]:
+    def _classify_data_points(self, data_values: pd.DataFrame) -> tuple[list, list, list]:
         """Classify data points into valid, to_delete, and not_valid.
 
         Returns:
             tuple[list, list, list]: Lists for valid data points, data points to delete, and not valid data points.
         """
-        if data_values.is_empty():
+        if data_values.empty:
             current_run.log_warning("No data to push.")
             return [], [], []
 
         valid = []
         not_valid = []
         to_delete = []
-        for row in data_values.iter_rows(named=True):
+        for _, row in data_values.iterrows():
             dpoint = DataPoint(row)
             if dpoint.is_valid():
                 valid.append(dpoint.to_json())
@@ -78,7 +78,7 @@ class DHIS2Pusher:
         logger.info(msg)
         self._log_summary_errors(summary)
 
-    def _push_removals(self, data_points_to_remove: list) -> None:
+    def _push_removals(self, data_points_to_remove: pd.DataFrame) -> None:
         if len(data_points_to_remove) == 0:
             # current_run.log_info("No NA data points to push.")
             return
@@ -164,7 +164,8 @@ class DHIS2Pusher:
 
                 if response:
                     self._update_import_counts(summary, response)
-                    # Capture conflicts/errorReports if present (only if response is not None)
+
+                # Always capture conflicts/errorReports if present
                 errors = response.get("conflicts", []) + response.get("errorReports", [])
                 if errors:
                     summary["ERRORS"].extend(errors)
@@ -178,10 +179,9 @@ class DHIS2Pusher:
 
             processed_points += len(chunk)
 
-            # Log progress only at significant milestones (every logging_interval points)
-            # Use logging.info instead of current_run.log_info to reduce verbosity in OpenHexa UI
+            # Log every logging_interval points
             if processed_points // logging_interval > (processed_points - len(chunk)) // logging_interval:
-                logger.info(
+                current_run.log_info(
                     f"{processed_points} / {total_data_points} data points pushed summary: {summary['import_counts']}"
                 )
 

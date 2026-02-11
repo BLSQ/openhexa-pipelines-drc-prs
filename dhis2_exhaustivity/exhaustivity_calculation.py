@@ -81,7 +81,6 @@ def compute_exhaustivity(
       - Si TOUS sont présents ET non-null → exhaustivity = 1
       - Si UN DX_UID mappé est manquant OU a une valeur null/vide → exhaustivity = 0
     - Si un COC n'est pas présent dans les données → exhaustivity = 0 (COC manquant)
-    Parameters
     ----------
     pipeline_path : Path
         Path to the pipeline directory.
@@ -297,19 +296,15 @@ def compute_exhaustivity(
                 config_dir = pipeline_path / "configuration"
                 pipeline_config = load_pipeline_config(config_dir)
                 
-                # Find matching extract by EXTRACT_ID
-                matching_extract = get_extract_config(pipeline_config, extract_id)
-                
-                if matching_extract:
-                    # Load mappings from DRUG_MAPPING_FILE
-                    drug_mapping_file = matching_extract.get("DRUG_MAPPING_FILE")
-                    if drug_mapping_file:
-                        extract_mappings, _ = load_drug_mapping(config_dir, drug_mapping_file)
-                        if extract_mappings:
-                            safe_log_info(
-                                f"Loaded {len(extract_mappings)} mappings "
-                                f"from {drug_mapping_file} for {extract_id}"
-                            )
+                # Load drug mapping file directly (hardcoded path based on extract_id)
+                mapping_prefix = extract_id.split("_")[0].lower()  # e.g., "Fosa" from "Fosa_exhaustivity_data_elements"
+                mapping_file = f"drug_mapping_{mapping_prefix}.json"
+                extract_mappings, _ = load_drug_mapping(config_dir, mapping_file)
+                if extract_mappings:
+                    safe_log_info(
+                        f"Loaded {len(extract_mappings)} mappings "
+                        f"from {mapping_file} for {extract_id}"
+                    )
                 else:
                     safe_log_warning(f"Extract {extract_id} not found in pipeline_config")
             except Exception as e:
