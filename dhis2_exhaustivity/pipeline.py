@@ -247,7 +247,9 @@ def handle_data_element_extracts(
             for period in extract_periods:
                 # Extract data for period (extractor handles folder creation and file overwrite)
                 try:
-                    extract_path = dhis2_extractor.data_elements.download_period(
+                    # Use analytics-based extractor for compatibility with older DHIS2 versions
+                    # where dataValueSets `data_elements` filter is not supported (< 2.39).
+                    extract_path = dhis2_extractor.analytics_data_elements.download_period(
                         data_elements=data_element_uids,
                         org_units=org_units,
                         period=period,
