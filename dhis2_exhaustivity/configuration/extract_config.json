@@ -4,9 +4,9 @@
         "TARGET_DHIS2": "drc-prs"
     },
     "EXTRACTION": {
-        "MONTHS_WINDOW": 4,
-        "STARTDATE": "202509",
-        "ENDDATE": "202512",
+        "MONTHS_WINDOW": 3,
+        "STARTDATE": "",
+        "ENDDATE": "",
         "MODE": "DOWNLOAD_REPLACE"
     },
     "EXTRACTS": [
