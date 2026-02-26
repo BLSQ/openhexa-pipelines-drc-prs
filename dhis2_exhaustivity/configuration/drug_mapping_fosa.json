@@ -1,0 +1,155 @@
+{
+    "Artemether + Luméfantrine, 20mg + 120mg, 12 Tablets dispersible": {
+        "stock_entry_fosa": {"UID": "imqSmhfQTPN", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "imqSmhfQTPN", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "imqSmhfQTPN", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "imqSmhfQTPN", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "PMuB7JCsLsg", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "imqSmhfQTPN", "COC": "XEN3ucCGa07"}
+    },
+    "Artemether + Luméfantrine, 20mg + 120mg, 18 Tablets dispersible": {
+        "stock_entry_fosa": {"UID": "hgjnpRWXunB", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "hgjnpRWXunB", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "hgjnpRWXunB", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "hgjnpRWXunB", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "Gq9Z3wvbcsa", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "hgjnpRWXunB", "COC": "XEN3ucCGa07"}
+    },
+    "Artemether + Luméfantrine, 20mg + 120mg, 24 Tablets": {
+        "stock_entry_fosa": {"UID": "fHyOLs6mPEr", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "fHyOLs6mPEr", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "fHyOLs6mPEr", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "fHyOLs6mPEr", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "E1Nfbx2upTn", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "fHyOLs6mPEr", "COC": "XEN3ucCGa07"}
+    },
+    "Artemether + Luméfantrine, 20mg + 120mg, 6 Tablets dispersible": {
+        "stock_entry_fosa": {"UID": "pScfYi2Qxop", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "pScfYi2Qxop", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "pScfYi2Qxop", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "pScfYi2Qxop", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "OYVsvv6fCja", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "pScfYi2Qxop", "COC": "XEN3ucCGa07"}
+    },
+    "Artésunate, 100mg, suppositoire": {
+        "stock_entry_fosa": {"UID": "FVJ2v5RgBgL", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "FVJ2v5RgBgL", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "FVJ2v5RgBgL", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "FVJ2v5RgBgL", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "JBUiL4Cykj6", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "FVJ2v5RgBgL", "COC": "XEN3ucCGa07"}
+    },
+    "Artésunate, 200mg, suppositoire": {
+        "stock_entry_fosa": {"UID": "a0i3MXpBmhT", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "a0i3MXpBmhT", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "a0i3MXpBmhT", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "a0i3MXpBmhT", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "zeqeboHpEb2", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "a0i3MXpBmhT", "COC": "XEN3ucCGa07"}
+    },
+    "Artésunate, 60mg, Injectable": {
+        "stock_entry_fosa": {"UID": "b0f8cOW1CFV", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "b0f8cOW1CFV", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "b0f8cOW1CFV", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "b0f8cOW1CFV", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "Iz0aHMkdkQL", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "b0f8cOW1CFV", "COC": "XEN3ucCGa07"}
+    },
+    "Artésunate, 120mg, Injectable": {
+        "stock_entry_fosa": {"UID": "c5nKAODeM8D", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "c5nKAODeM8D", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "c5nKAODeM8D", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "c5nKAODeM8D", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "OUSS5mSrz1x", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "c5nKAODeM8D", "COC": "XEN3ucCGa07"}
+    },
+    "Artesunate + Amodiaquine, 100mg + 270mg, Tablets, 6-13 ans": {
+        "stock_entry_fosa": {"UID": "Xt48UQAZppa", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "Xt48UQAZppa", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "Xt48UQAZppa", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "Xt48UQAZppa", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "jokGP7OGiZ5", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "Xt48UQAZppa", "COC": "XEN3ucCGa07"}
+    },
+    "Artesunate + Amodiaquine, 100mg + 270mg, Tablets, Adulte": {
+        "stock_entry_fosa": {"UID": "ccpDQ5umc0a", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "ccpDQ5umc0a", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "ccpDQ5umc0a", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "ccpDQ5umc0a", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "dZNy8p5cZKT", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "ccpDQ5umc0a", "COC": "XEN3ucCGa07"}
+    },
+    "Artesunate + Amodiaquine, 25mg + 67.5mg": {
+        "stock_entry_fosa": {"UID": "jlRZE5tTARe", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "jlRZE5tTARe", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "jlRZE5tTARe", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "jlRZE5tTARe", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "BuNHpvE2fEr", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "jlRZE5tTARe", "COC": "XEN3ucCGa07"}
+    },
+    "Artesunate + Amodiaquine, 50mg + 135mg, Tablets": {
+        "stock_entry_fosa": {"UID": "bdy45DCTJLB", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "bdy45DCTJLB", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "bdy45DCTJLB", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "bdy45DCTJLB", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "RPE8N0UZpdg", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "bdy45DCTJLB", "COC": "XEN3ucCGa07"}
+    },
+    "Moustiquaire Impregnée d'insecticide": {
+        "stock_entry_fosa": {"UID": "PLjvTAvttMR", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "PLjvTAvttMR", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "PLjvTAvttMR", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "PLjvTAvttMR", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "lKvN4sxgsIL", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "PLjvTAvttMR", "COC": "XEN3ucCGa07"}
+    },
+    "Quinine Bichlorhydrate, 300mg/ml, 2ml": {
+        "stock_entry_fosa": {"UID": "S007ecRnpvZ", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "S007ecRnpvZ", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "S007ecRnpvZ", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "S007ecRnpvZ", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "BVzmrRaTfcT", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "S007ecRnpvZ", "COC": "XEN3ucCGa07"}
+    },
+    "Quinine HCl/Sulf, 300mg base, Tablets": {
+        "stock_entry_fosa": {"UID": "EwiHKw8P2xz", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "EwiHKw8P2xz", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "EwiHKw8P2xz", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "EwiHKw8P2xz", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "uW5PSD9hNBr", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "EwiHKw8P2xz", "COC": "XEN3ucCGa07"}
+    },
+    "Quinine HCl/Sulf, 500mg base, Tablets": {
+        "stock_entry_fosa": {"UID": "cbuwM5uOq3O", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "cbuwM5uOq3O", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "cbuwM5uOq3O", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "cbuwM5uOq3O", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "pbkiXu6bxQm", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "cbuwM5uOq3O", "COC": "XEN3ucCGa07"}
+    },
+    "Sulfadoxine + Pyrimethamine, 250+12.5mg, Tablets": {
+        "stock_entry_fosa": {"UID": "PlYGakAhqbk", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "PlYGakAhqbk", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "PlYGakAhqbk", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "PlYGakAhqbk", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "UAuoPAiQ1tG", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "PlYGakAhqbk", "COC": "XEN3ucCGa07"}
+    },
+    "Sulfadoxine + Pyrimethamine, 500+25mg, Tablets": {
+        "stock_entry_fosa": {"UID": "eKHjiGzfBep", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "eKHjiGzfBep", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "eKHjiGzfBep", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "eKHjiGzfBep", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "vQQ4gYZ4ccT", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "eKHjiGzfBep", "COC": "XEN3ucCGa07"}
+    },
+    "Test Diagnostic Rapide, Malaria": {
+        "stock_entry_fosa": {"UID": "vtqAD1gqMxx", "COC": "WZwmzIuRvwV"},
+        "stock_start_fosa": {"UID": "vtqAD1gqMxx", "COC": "AeX0BJgW0s5"},
+        "stock_end_fosa": {"UID": "vtqAD1gqMxx", "COC": "kOWsLrtvrhn"},
+        "quantity_consumed_fosa": {"UID": "vtqAD1gqMxx", "COC": "pdKyvaYRqCj"},
+        "quantity_lost_adjusted_fosa": {"UID": "doMlZ2uA9kF", "COC": "pGSfKOKL9s0"},
+        "days_of_stock_out_fosa": {"UID": "vtqAD1gqMxx", "COC": "XEN3ucCGa07"}
+    }
+}
+

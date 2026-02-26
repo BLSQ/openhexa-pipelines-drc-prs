@@ -188,7 +188,7 @@ cython_debug/
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
 #  and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+.vscode/
 
 # Ruff stuff:
 .ruff_cache/
@@ -207,3 +207,45 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific: Don't push to prod
+# Workspace data (extracted data, processed results, logs)
+**/workspace/pipelines/*/data/
+**/workspace/pipelines/*/logs/
+**/workspace/pipelines/*/configuration/.queue.db
+**/workspace/pipelines/*/configuration/extract_config_test.json
+
+# Test configuration files in workspace
+**/workspace/**/extract_config_test.json
+**/workspace/**/sync_config.json
+**/workspace/**/push_config.json
+
+# Local test files
+**/test_*.py
+**/run_local_test.py
+**/test_summary_format.py
+**/test_exhaustivity.py
+**/test_missing_dxuid.py
+
+# Local result viewing utilities
+**/show_results.py
+**/run_and_show_results.py
+**/view_results.sh
+**/view_*.sh
+**/view_*.py
+
+# Data directories (if any at root level)
+data/
+extracts/
+processed/
+reporting_status/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files
+.env
+.env.local
+.env.*.local

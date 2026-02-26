@@ -1,0 +1,49 @@
+# OpenHexa Pipeline - Essential ignores
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OpenHexa workspace (local data)
+workspace/
+workspace.yaml
+
+# Queue database
+.queue.db
+*.db
+
+# Logs
+logs/
+*.log
+
+# Local test files
+run_local_*.py
+test_*.py
+inspect_*.py
+config_files/*_test.json
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test data
+test_data_*/
+data/
+
+# Configuration test files
+configuration/*_test.json
