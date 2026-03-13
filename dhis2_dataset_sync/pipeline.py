@@ -792,7 +792,7 @@ def filter_by_dataset_org_units(target_dhis2: DHIS2, data: pd.DataFrame, dataset
         Filtered DataFrame containing only rows with organisation units present in the dataset.
     """
     # GET current dataset from PRS DHIS2
-    url = f"{target_dhis2.api.url}/dataSets/{dataset_id}"
+    url = f"{target_dhis2.api.url}/dataSets/{dataset_id}?fields=id,organisationUnits[id]"
     try:
         dataset_payload = dhis2_request(target_dhis2.api.session, "get", url)
     except requests.RequestException as e:
@@ -802,12 +802,34 @@ def filter_by_dataset_org_units(target_dhis2: DHIS2, data: pd.DataFrame, dataset
         current_run.log_warning(f"Unexpected error during payload fetch for dataset {dataset_id} alignment: {e!s}")
         return data
 
+    # Check if organisationUnits exists in response
+    if "organisationUnits" not in dataset_payload:
+        raise ValueError(
+            f"Dataset {dataset_id} response missing 'organisationUnits' field. "
+            f"Cannot filter data without org unit information. "
+            f"Available fields: {list(dataset_payload.keys())}"
+        )
+
+    # Check if organisationUnits is empty
+    if not dataset_payload["organisationUnits"]:
+        raise ValueError(
+            f"Dataset {dataset_id} has no organisation units assigned. "
+            f"Cannot proceed with data push - dataset must have org units configured."
+        )
+
     ds_uids = [ou["id"] for ou in dataset_payload["organisationUnits"]]
     data_filtered = data[data["ORG_UNIT"].isin(ds_uids)]
     current_run.log_info(
         f"Extract filtered by dataset {dataset_id} OUs {len(ds_uids)}, "
         f"rows removed {data.shape[0] - data_filtered.shape[0]}"
     )
+
+    if data_filtered.empty:
+        raise ValueError(
+            f"After filtering by dataset {dataset_id} org units, no data remains. "
+            f"Check that source data org units match the target dataset's {len(ds_uids)} org units."
+        )
+
     return data_filtered
 
 

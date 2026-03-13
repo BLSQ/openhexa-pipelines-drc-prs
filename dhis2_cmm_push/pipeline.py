@@ -16,10 +16,11 @@ from openhexa.toolbox.dhis2.dataframe import get_datasets
 from openhexa.toolbox.dhis2.periods import period_from_string
 from requests.exceptions import HTTPError, RequestException
 from utils import (
-    configure_logging,
+    configure_logging_flush,
     connect_to_dhis2,
     load_configuration,
     read_parquet_extract,
+    save_logs,
     save_to_parquet,
 )
 
@@ -87,7 +88,7 @@ def extract_data(
         return
 
     current_run.log_info("Data elements extraction task started.")
-    configure_logging(logs_path=pipeline_path / "logs" / "extract", task_name="extract_data")
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="extract_data")
 
     # load configuration
     extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
@@ -145,16 +146,20 @@ def extract_data(
         extract_periods=get_periods(start_cmm, end),
     )
 
-    # Collect the downloaded files and compute CMM.
-    target_extract = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])[0]
-    compute_cmm_and_queue(
-        pipeline_path=pipeline_path,
-        extract_id=target_extract.get("EXTRACT_UID"),
-        data_elements=target_extract.get("UIDS", []),
-        cmm_window=cmm_window,
-        cmm_periods=get_periods(start, end),
-        push_queue=push_queue,
-    )
+    try:
+        # Collect the downloaded files and compute CMM.
+        target_extract = extract_config["DATA_ELEMENTS"].get("EXTRACTS", [])[0]
+        compute_cmm_and_queue(
+            pipeline_path=pipeline_path,
+            extract_id=target_extract.get("EXTRACT_UID"),
+            data_elements=target_extract.get("UIDS", []),
+            cmm_window=cmm_window,
+            cmm_periods=get_periods(start, end),
+            push_queue=push_queue,
+            logger=logger,
+        )
+    finally:
+        save_logs(logs_file, output_dir=pipeline_path / "logs" / "org_units")
 
 
 def handle_data_element_extracts(
@@ -296,6 +301,7 @@ def compute_cmm_and_queue(
     cmm_window: int,
     cmm_periods: list[str],
     push_queue: Queue,
+    logger: logging.Logger,
 ) -> None:
     """Computes CMM from extracted data and enqueues the result for pushing.
 
@@ -313,6 +319,8 @@ def compute_cmm_and_queue(
         List of periods to process.
     push_queue : Queue
         Queue to enqueue the CMM result file for pushing.
+    logger : logging.Logger
+        Logger for logging information and errors.
     """
     extracts_folder = pipeline_path / "data" / "extracts" / "data_elements" / f"extract_{extract_id}"
     output_dir = pipeline_path / "data" / "cmm"
@@ -324,25 +332,24 @@ def compute_cmm_and_queue(
             end_cmm = (datetime.strptime(period, "%Y%m") - relativedelta(months=1)).strftime("%Y%m")
             target_periods = get_periods(start_cmm, end_cmm)
 
-            files_to_read = {
-                p: (extracts_folder / f"data_{p}.parquet") if (extracts_folder / f"data_{p}.parquet").exists() else None
-                for p in target_periods
-            }
-            missing_extracts = [k for k, v in files_to_read.items() if not v]
-
-            if len(missing_extracts) == len(target_periods):
-                raise FileNotFoundError(f"No parquet files found for {target_periods} in {extracts_folder}")
+            files_to_read = {p: extracts_folder / f"data_{p}.parquet" for p in target_periods}
+            missing_extracts = [p for p, path in files_to_read.items() if not path.exists()]
 
             if missing_extracts:
-                current_run.log_warning(
-                    f"Expected {len(target_periods)} parquet files for CMM computation period {period}, "
-                    f"but missing files for periods: {missing_extracts}."
+                msg = (
+                    f"Expected {len(target_periods)} extracts for CMM computation period {period}, "
+                    f"but missing files for periods: {missing_extracts}, cannot proceed."
                 )
+                logger.error(msg)
+                current_run.log_error(msg)
+                continue  # Skip this period and try the next one
 
             try:
-                df = pl.concat([pl.read_parquet(f) for f in files_to_read.values() if f is not None])
+                df = pl.concat([pl.read_parquet(path) for path in files_to_read.values()])
             except Exception as e:
-                raise RuntimeError(f"Error reading parquet files for CMM computation: {e!s}") from e
+                logger.error(f"Error reading parquet files for CMM computation for period {period}: {e!s}")
+                current_run.log_error(f"Error reading parquet files for CMM computation for period {period}")
+                continue  # Skip this period and try the next one
 
             # PRS specific filter (!)
             df = df.filter((pl.col("CATEGORY_OPTION_COMBO") == "cjeG5HSWRIU") & (pl.col("DX_UID").is_in(data_elements)))
@@ -361,7 +368,7 @@ def compute_cmm_and_queue(
                 )
                 push_queue.enqueue(f"{extract_id}|{output_dir / f'cmm_{period}.parquet'}")
             except Exception as e:
-                logging.error(f"CMM saving error: {e!s}")
+                logger.error(f"CMM saving error: {e!s}")
                 current_run.log_error(f"Error saving CMM parquet file for period {period}.")
     finally:
         current_run.log_info("CMM computation finished.")
@@ -422,7 +429,9 @@ def update_dataset_org_units(
 
         # Previously the source dataset has been sync with SNIS by pipeline dhis2_dataset_sync.
         # Sync OU: PRS C- SIGL FOSA-Import SNIS SANRU (wMCnDAQfGZN) -> PRS CMM - OpenHexa (uuoQdHIDMTB)
-        configure_logging(logs_path=pipeline_path / "logs" / "dataset_org_units", task_name="dataset_org_units_sync")
+        logger, logs_file = configure_logging_flush(
+            logs_path=Path("/home/jovyan/tmp/logs"), task_name="ds_org_units_sync"
+        )
         config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
         prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
 
@@ -431,18 +440,25 @@ def update_dataset_org_units(
             source_dataset_id="wMCnDAQfGZN",  # PRS C- SIGL FOSA-Import SNIS
             target_dataset_id="uuoQdHIDMTB",  # PRS CMM - OpenHexa
             dry_run=config["SETTINGS"].get("DRY_RUN", True),
+            logger=logger,
         )
 
     except Exception as e:
         current_run.log_error("An error occurred during dataset org units update. Process stopped.")
         logging.error(f"An error occurred during dataset org units update: {e}")
         raise
+    finally:
+        save_logs(logs_file, output_dir=pipeline_path / "logs" / "ds_org_units_sync")
 
     return True
 
 
 def push_dataset_org_units(
-    dhis2_client: DHIS2, source_dataset_id: str, target_dataset_id: str, dry_run: bool = True
+    dhis2_client: DHIS2,
+    source_dataset_id: str,
+    target_dataset_id: str,
+    dry_run: bool = True,
+    logger: logging.Logger | None = None,
 ) -> dict:
     """Updates the organisation units of a DHIS2 dataset.
 
@@ -456,6 +472,8 @@ def push_dataset_org_units(
         The ID of the dataset to be updated.
     dry_run : bool, optional
         If True, performs a dry run without making changes (default is True).
+    logger : logging.Logger, optional
+        Logger for logging information and errors (default is None).
 
     Returns
     -------
@@ -497,11 +515,11 @@ def push_dataset_org_units(
 
     if "error" in update_response:
         current_run.log_info(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
-        logging.error(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
+        logger.error(f"Error updating dataset {target_dataset_id}: {update_response['error']}")
     else:
         msg = f"Dataset {target_dataset['name'].item()} ({target_dataset_id}) org units updated: {len(source_ous)}"
         current_run.log_info(msg)
-        logging.info(msg)
+        logger.info(msg)
 
     return update_response
 
@@ -520,7 +538,7 @@ def push_data(
     current_run.log_info("Starting data push.")
 
     # setup
-    configure_logging(logs_path=pipeline_path / "logs" / "push", task_name="push_data")
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="push_data")
     config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
     dhis2_client = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
     db_path = pipeline_path / "configuration" / ".queue.db"
@@ -544,6 +562,7 @@ def push_data(
         import_strategy=import_strategy,
         dry_run=dry_run,
         max_post=max_post,
+        logger=logger,
     )
 
     # Map data types to their respective mapping functions
@@ -604,6 +623,8 @@ def push_data(
             current_run.log_error(f"Fatal error for extract {extract_id} ({short_path}), stopping push process.")
             logging.error(f"Fatal error for extract {extract_id} ({short_path}): {e!s}")
             raise  # crash on error
+        finally:
+            save_logs(logs_file, output_dir=pipeline_path / "logs" / "push_data")
 
     current_run.log_info("Data push task finished.")
 

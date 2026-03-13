@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -267,6 +269,47 @@ def configure_logging(logs_path: Path, task_name: str):
         level=logging.INFO,
         format="%(asctime)s - %(message)s",
     )
+
+
+def configure_logging_flush(logs_path: Path, task_name: str) -> tuple[logging.Logger, Path]:
+    """Set up a logger for a specific task, with immediate flush behavior.
+
+    Returns
+    -------
+    tuple[logging.Logger, Path]
+        A tuple containing the configured logger and the path to the log file.
+    """
+
+    class HandlerThatAlwaysFlushes(logging.FileHandler):
+        def emit(self, record: logging.LogRecord) -> None:
+            super().emit(record)
+            self.flush()
+            if self.stream and not self.stream.closed:
+                os.fsync(self.stream.fileno())
+
+    # Ensure logs directory exists
+    logs_path.mkdir(parents=True, exist_ok=True)
+    now = datetime.now().strftime("%Y-%m-%d-%H_%M")
+    log_file = logs_path / f"{task_name}_{now}.log"
+
+    # Create or get logger
+    logger = logging.getLogger(task_name)
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = HandlerThatAlwaysFlushes(log_file, mode="a")
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+    return logger, log_file
+
+
+def save_logs(logs_file: Path, output_dir: Path) -> None:
+    """Moves all .log files from logs_path to output_dir."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if logs_file.is_file():
+        dest_file = output_dir / logs_file.name
+        shutil.copy(logs_file.as_posix(), dest_file.as_posix())
 
 
 def read_json_file(file_path: Path) -> dict:
