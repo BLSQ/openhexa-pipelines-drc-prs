@@ -30,7 +30,7 @@ from utils import (
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
 
-@pipeline("dhis2_cmm_push")
+@pipeline("dhis2_cmm_push", timeout=28800)  # (hours) * 60 * 60
 @parameter(
     code="run_extract_data",
     name="Extract data",
