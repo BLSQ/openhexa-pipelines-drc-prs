@@ -583,6 +583,7 @@ def push_data(
     while True:
         next_extract = push_queue.peek()
         if next_extract == "FINISH":
+            current_run.log_info("Push process finished, no more extracts to push.")
             push_queue.dequeue()  # remove marker if present
             break
 
@@ -791,16 +792,23 @@ def filter_by_dataset_org_units(target_dhis2: DHIS2, data: pd.DataFrame, dataset
     pd.DataFrame
         Filtered DataFrame containing only rows with organisation units present in the dataset.
     """
+    if not dataset_id:
+        return data
+
     # GET current dataset from PRS DHIS2
     url = f"{target_dhis2.api.url}/dataSets/{dataset_id}?fields=id,organisationUnits[id]"
+    current_run.log_info(f"Fetching dataset from: {url}")
     try:
         dataset_payload = dhis2_request(target_dhis2.api.session, "get", url)
-    except requests.RequestException as e:
-        current_run.log_warning(f"Network/HTTP error during payload fetch for dataset {dataset_id} alignment: {e!s}")
-        return data
     except Exception as e:
-        current_run.log_warning(f"Unexpected error during payload fetch for dataset {dataset_id} alignment: {e!s}")
-        return data
+        raise RuntimeError(f"Unexpected error during payload fetch for dataset {dataset_id}: {e!s}") from e
+
+    if not isinstance(dataset_payload, dict):
+        raise ValueError(f"Invalid response for dataset {dataset_id}. Expected a dictionary.")
+
+    # Optional: catch error responses from dhis2_request
+    if "error" in dataset_payload:
+        raise RuntimeError(f"DHIS2 API returned an error for dataset {dataset_id}: {dataset_payload['error']}")
 
     # Check if organisationUnits exists in response
     if "organisationUnits" not in dataset_payload:
@@ -820,8 +828,8 @@ def filter_by_dataset_org_units(target_dhis2: DHIS2, data: pd.DataFrame, dataset
     ds_uids = [ou["id"] for ou in dataset_payload["organisationUnits"]]
     data_filtered = data[data["ORG_UNIT"].isin(ds_uids)]
     current_run.log_info(
-        f"Extract filtered by dataset {dataset_id} OUs {len(ds_uids)}, "
-        f"rows removed {data.shape[0] - data_filtered.shape[0]}"
+        f"Extract filtered by dataset {dataset_id} with OUs: {len(ds_uids)}. "
+        f"Data points removed from import data: {data.shape[0] - data_filtered.shape[0]}"
     )
 
     if data_filtered.empty:
@@ -846,7 +854,9 @@ def handle_data_element_extracts(
         current_run.log_info("No data elements to extract.")
         return
 
-    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="extract_data")
+    logger, logs_file = configure_logging_flush(
+        logs_path=Path(workspace.files_path) / "tmp/logs", task_name="extract_data"
+    )
     current_run.log_info("Starting data element extracts.")
     try:
         # loop over the available extract configurations
