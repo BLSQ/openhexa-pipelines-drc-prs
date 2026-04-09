@@ -854,9 +854,7 @@ def handle_data_element_extracts(
         current_run.log_info("No data elements to extract.")
         return
 
-    logger, logs_file = configure_logging_flush(
-        logs_path=Path(workspace.files_path) / "tmp/logs", task_name="extract_data"
-    )
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="extract_data")
     current_run.log_info("Starting data element extracts.")
     try:
         # loop over the available extract configurations
