@@ -8,7 +8,6 @@ import pandas as pd
 import polars as pl
 import requests
 from d2d_library.db_queue import Queue
-from d2d_library.dhis2_dataset_completion_handler import DatasetCompletionSync
 from d2d_library.dhis2_extract_handlers import DHIS2Extractor
 from d2d_library.dhis2_org_unit_aligner import DHIS2PyramidAligner
 from d2d_library.dhis2_pusher import DHIS2Pusher
@@ -58,14 +57,7 @@ from utils import (
     default=True,
     help="Push data to target DHIS2.",
 )
-@parameter(
-    code="run_ds_sync",
-    name="Sync datasets",
-    type=bool,
-    default=False,
-    help="Sync dataset statuses between source and target DHIS2.",
-)
-def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data: bool, run_ds_sync: bool):
+def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data: bool):
     """Main pipeline function for DHIS2 dataset synchronization.
 
     Parameters
@@ -76,8 +68,6 @@ def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data:
         If True, runs the data extraction task (default is True).
     run_push_data : bool, optional
         If True, runs the data push task (default is True).
-    run_ds_sync : bool, optional
-        If True, runs the dataset statuses sync task (default is False).
 
     Raises
     ------
@@ -104,16 +94,10 @@ def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data:
             wait=datasets_ready,
         )
 
-        push_ready = push_data(
+        push_data(
             pipeline_path=pipeline_path,
             run_task=run_push_data,
             wait=datasets_ready,
-        )
-
-        sync_dataset_statuses(
-            pipeline_path=pipeline_path,
-            run_task=run_ds_sync,
-            wait=push_ready,
         )
 
     except Exception as e:
@@ -573,11 +557,7 @@ def push_data(
     )
 
     # Map data types to their respective mapping functions
-    dispatch_map = {
-        "DATA_ELEMENT": (config["DATA_ELEMENTS"]["EXTRACTS"], apply_data_element_extract_config),
-        "REPORTING_RATE": (config["REPORTING_RATES"]["EXTRACTS"], apply_reporting_rates_extract_config),
-        "INDICATOR": (config["INDICATORS"]["EXTRACTS"], apply_indicators_extract_config),
-    }
+    dispatch_map = {"DATA_ELEMENT": (config["DATA_ELEMENTS"]["EXTRACTS"], apply_data_element_extract_config)}
 
     # loop over the queue
     while True:
@@ -633,7 +613,9 @@ def push_data(
             push_queue.dequeue()
             current_run.log_info(f"Data push finished for extract: {extract_path.name}.")
 
-            # Save copy of the org units under a dataset folder
+            # NOTE: Save copy of the org units under a dataset folder
+            # These files are used by the slave pipeline dhis2_dataset_sync_completions
+            # to know which org units to sync for the completions extracts.
             prepare_dataset_sync_data(pipeline_path, extract_config, df_mapped, period)
         except Exception as e:
             current_run.log_error(
@@ -654,79 +636,6 @@ def save_logs(logs_file: Path, output_dir: Path) -> None:
         shutil.copy(logs_file.as_posix(), dest_file.as_posix())
 
 
-@dhis2_dataset_sync.task
-def sync_dataset_statuses(
-    pipeline_path: Path,
-    run_task: bool = True,
-    wait: bool = True,
-):
-    """Syncs dataset statuses between source and target DHIS2 instances.
-
-    :param pipeline_path: Description
-    :type pipeline_path: Path
-    :param run_task: Description
-    :type run_task: bool
-    :param wait: Description
-    :type wait: bool
-    """
-    if not run_task:
-        current_run.log_info("Dataset sync task skipped.")
-        return
-
-    current_run.log_info("Starting dataset statuses sync.")
-
-    # setup
-    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="ds_sync")
-    config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
-    target_dhis2 = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
-
-    # Push parameters
-    import_strategy = config["SETTINGS"].get("IMPORT_STRATEGY", "CREATE_AND_UPDATE")
-    dry_run = config["SETTINGS"].get("DRY_RUN", True)
-
-    # Dataset completion syncer
-    source_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
-    source_dhis2 = connect_to_dhis2(connection_str=source_config["SETTINGS"]["SOURCE_DHIS2_CONNECTION"], cache_dir=None)
-    completion_syncer = DatasetCompletionSync(
-        source_dhis2=source_dhis2,
-        target_dhis2=target_dhis2,
-        import_strategy=import_strategy,
-        dry_run=dry_run,
-        logger=logger,
-    )
-
-    # Find the extract config based on the dataset sync folder name
-    ds_sync_dir = pipeline_path / "data" / "dataset_sync"
-    ds_extracts = get_dataset_extract_config(ds_sync_dir, config)  # based on folder names
-
-    try:
-        for extract_config in ds_extracts:
-            ds_extract_dir = ds_sync_dir / extract_config.get("EXTRACT_UID")
-            sync_window = extract_config.get("SYNC_PERIOD_WINDOW", None)
-            files = sorted(list(ds_extract_dir.glob("ds_sync_*.parquet")))
-            files = files[-sync_window:] if sync_window else files
-
-            for file in files:
-                period = file.stem.replace("ds_sync_", "")
-
-                # Set dataset competion for all org units for this period
-                handle_dataset_completion(
-                    completion_syncer,
-                    source_ds_id=extract_config.get("SOURCE_DATASET_UID"),
-                    target_ds_id=extract_config.get("TARGET_DATASET_UID"),
-                    dhis2_pyramid=read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet"),
-                    period=period,
-                    ds_sync_fname=file,
-                    ds_processed=ds_extract_dir / "processed",
-                    logger=logger,
-                )
-
-    except Exception as e:
-        raise Exception(f"Error during dataset statuses sync: {e}") from e
-    finally:
-        save_logs(logs_file, output_dir=pipeline_path / "logs" / "ds_sync")
-
-
 def prepare_dataset_sync_data(pipeline_path: Path, extract_config: dict, df_mapped: pd.DataFrame, period: str) -> None:
     """Handles backup of organisation units under dataset folder after push."""
     source_ds = extract_config.get("SOURCE_DATASET_UID")
@@ -735,6 +644,7 @@ def prepare_dataset_sync_data(pipeline_path: Path, extract_config: dict, df_mapp
         return
 
     extract_id = extract_config.get("EXTRACT_UID")
+    # NOTE: This is a common path shared with the slave pipeline dhis2_dataset_sync_completions
     dataset_dir = pipeline_path / "data" / "dataset_sync" / extract_id
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
@@ -747,32 +657,6 @@ def prepare_dataset_sync_data(pipeline_path: Path, extract_config: dict, df_mapp
     output_path = dataset_dir / f"ds_sync_{period}.parquet"
     unique_org_units_df.to_parquet(output_path, index=False)
     current_run.log_info(f"Dataset sync org units saved: {output_path}")
-
-
-def get_dataset_extract_config(ds_sync_path: Path, config: dict) -> list:
-    """Retrieves the dataset extract configurations.
-
-      Returns the config for whos EXTRACT_UID matches the folder names in the dataset_sync directory.
-
-    Parameters
-    ----------
-    ds_sync_path : Path
-        Path to the datasets directory.
-    config : dict
-        Configuration dictionary containing dataset extract information.
-
-    Returns
-    -------
-    list
-        List of extract configuration dictionaries matching the dataset_sync folder name.
-    """
-    folder_names = {f.name for f in ds_sync_path.glob("*") if f.is_dir()}
-
-    return [
-        extract
-        for extract in config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
-        if extract.get("EXTRACT_UID") in folder_names
-    ]
 
 
 def filter_by_dataset_org_units(target_dhis2: DHIS2, data: pd.DataFrame, dataset_id: str) -> pd.DataFrame:
@@ -984,24 +868,6 @@ def apply_data_element_extract_config(
     return df_filtered
 
 
-def apply_reporting_rates_extract_config(
-    df: pd.DataFrame,
-    extract_config: dict,
-    logger: logging.Logger | None = None,
-) -> pd.DataFrame:
-    """Handles the mappings of reporting rates."""
-    raise NotImplementedError("Reporting rates mappings is not yet implemented.")
-
-
-def apply_indicators_extract_config(
-    df: pd.DataFrame,
-    extract_config: dict,
-    logger: logging.Logger | None = None,
-) -> pd.DataFrame:
-    """Handles the mappings of reporting rates."""
-    raise NotImplementedError("Indicator mappings is are not yet implemented.")
-
-
 def split_on_pipe(s: str) -> tuple[str, str | None]:
     """Splits a string on the first pipe character and returns a tuple.
 
@@ -1107,57 +973,6 @@ def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: an
         return {"error": f"Request error during {method.upper()} {url}: {e}"}
     except Exception as e:
         return {"error": f"Unexpected error during {method.upper()} {url}: {e}"}
-
-
-def handle_dataset_completion(
-    syncer: DatasetCompletionSync,
-    source_ds_id: str,
-    target_ds_id: str,
-    dhis2_pyramid: pd.DataFrame,
-    period: str,
-    ds_sync_fname: Path,
-    ds_processed: Path,
-    logger: logging.Logger,
-) -> None:
-    """Sets datasets as complete for the pushed periods.
-
-    This is a placeholder function and should be implemented based on specific requirements.
-    """
-    if not source_ds_id:
-        return
-    if not target_ds_id:
-        return
-    if not ds_sync_fname:
-        current_run.log_warning("No dataset sync file provided for completion sync, skipping.")
-        return
-
-    try:
-        df = pd.read_parquet(ds_sync_fname)
-        if "ORG_UNIT" not in df.columns:
-            raise KeyError(f"'ORG_UNIT' column not found in {ds_sync_fname}")
-        org_units_to_sync = df["ORG_UNIT"].unique().tolist()
-    except Exception as e:
-        msg = f"Error loading the dataset org units file to sync: {ds_sync_fname}. DS sync skipped."
-        logger.error(msg + f" Error: {e}")
-        current_run.log_info(msg)
-        return
-
-    pyramid_level = 2
-    province_uids = dhis2_pyramid[dhis2_pyramid["level"] == pyramid_level]["id"].to_list()
-    current_run.log_info(f"Building source completion table for {len(province_uids)} OUs level 2 period {period}.")
-    try:
-        syncer.sync(
-            source_dataset_id=source_ds_id,
-            target_dataset_id=target_ds_id,
-            org_units=org_units_to_sync,
-            parent_ou=province_uids,
-            period=period,
-            logging_interval=4000,
-            ds_processed_path=ds_processed,
-        )
-        syncer.reset_import_summary()  # reset summary after each run
-    except Exception as e:
-        current_run.log_error(f"Error setting completions for dataset {target_ds_id}, period {period} - Error: {e!s}.")
 
 
 def handle_full_pyramid_mapping(target_dhis2: DHIS2, source_ds_selection: pl.DataFrame) -> pl.DataFrame:

@@ -13,7 +13,7 @@
                 "EXTRACT_UID": "level_zs",
                 "SOURCE_DATASET_UID" : "k8mWHTAqHYZ",
                 "TARGET_DATASET_UID" : "jp5eWxb66XT",
-                "SYNC_PERIOD_WINDOW" : 6,
+                "SYNC_PERIOD_WINDOW" : 4,
                 "MAPPINGS": {
                     "PMuB7JCsLsg": {
                         "UID": "MFcy5dErsKR",
@@ -477,7 +477,7 @@
                 "EXTRACT_UID": "level_fosa",
                 "SOURCE_DATASET_UID" : "DxDuYrrZSa7",
                 "TARGET_DATASET_UID" : "wMCnDAQfGZN",
-                "SYNC_PERIOD_WINDOW" : 10,
+                "SYNC_PERIOD_WINDOW" : 4,
                 "MAPPINGS": {
                     "eKHjiGzfBep": {
                         "UID": "eKHjiGzfBep",
