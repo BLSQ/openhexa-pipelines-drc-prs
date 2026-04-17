@@ -13,7 +13,7 @@ from utils import (
 )
 
 
-@pipeline("dhis2_dataset_sync_completions")
+@pipeline("dhis2_dataset_sync_completions", timeout=43200)
 def dhis2_dataset_sync_completions():
     """Main pipeline function for DHIS2 dataset completion synchronization.
 
