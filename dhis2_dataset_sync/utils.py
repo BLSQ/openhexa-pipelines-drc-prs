@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, workspace
 from openhexa.toolbox.dhis2 import DHIS2
+from openhexa.toolbox.dhis2.periods import period_from_string
 
 
 def connect_to_dhis2(connection_str: str, cache_dir: Path) -> DHIS2:
@@ -327,3 +329,141 @@ def read_json_file(file_path: Path) -> dict:
         raise Exception(f"Failed to decode JSON : '{file_path}'. Details: {e}") from e
     except Exception as e:
         raise Exception(f"Unexpected error while reading the file '{file_path}': {e}") from e
+
+
+def is_valid_yyyymm(date: str) -> bool:
+    """Validates if the provided string is in YYYYMM format and represents a valid month and year.
+
+    Returns
+    -------
+    bool
+        True if the date is valid, False otherwise.
+    """
+    if not re.match(r"^\d{6}$", date):
+        return False
+    year = int(date[:4])
+    month = int(date[4:])
+    return 2000 <= year <= 2100 and 1 <= month <= 12
+
+
+def is_after_today(yyyymm: str) -> bool:
+    """Checks if the provided YYYYMM date string represents a month after the current month.
+
+    Returns
+    -------
+    bool
+        True if the provided date is after the current month, False otherwise.
+    """
+    try:
+        date = datetime.strptime(yyyymm, "%Y%m")
+    except ValueError:
+        return False  # Invalid format
+    now = datetime.now()
+    current_yyyymm = now.year * 100 + now.month
+    input_yyyymm = date.year * 100 + date.month
+    return input_yyyymm > current_yyyymm
+
+
+def adjust_to_previous_month_if_current(date_str: str) -> str:
+    """If the provided date_str is the current month, adjust it to the previous month. Otherwise, return it unchanged.
+
+    Returns
+    -------
+    str
+        Adjusted date string in YYYYMM format.
+    """
+    if date_str is None:
+        return None
+    date_obj = datetime.strptime(date_str, "%Y%m")
+    now = datetime.now()
+    current_yyyymm = now.strftime("%Y%m")
+    if date_str == current_yyyymm:
+        prev_month = date_obj - relativedelta(months=1)
+        prev_month_str = prev_month.strftime("%Y%m")
+        current_run.log_info(
+            f"Adjusting current to previous month to avoid empty data request: {date_str} -> {prev_month_str}"
+        )
+        return prev_month_str
+    return date_str
+
+
+def resolve_dates_and_validate(start_date: str, end_date: str, config: dict) -> tuple[str | None, str | None]:
+    """Resolves and validates start and end dates for data extraction.
+
+    Returns
+    -------
+    tuple[str | None, str | None]
+        Resolved and validated start and end dates.
+    """
+    months_lag = config["SETTINGS"].get("NUMBER_MONTHS_WINDOW", 3)  # default 3 months window
+
+    # start date resolution and validation
+    if start_date:
+        start_result = resolve_user_provided_date(start_date)
+    else:
+        current_run.log_info("No start date provided, using setting defaults.")
+        try:
+            if not config["SETTINGS"]["STARTDATE"]:
+                start_result = (datetime.now() - relativedelta(months=months_lag)).strftime("%Y%m")
+            else:
+                start_result = config["SETTINGS"]["STARTDATE"]
+        except Exception as e:
+            raise Exception(f"Error in start/end date configuration: {e}") from e
+
+    # end date resolution and validation
+    if end_date:
+        end_result = resolve_user_provided_date(end_date)
+    else:
+        current_run.log_info("No end date provided, using setting defaults.")
+        try:
+            if not config["SETTINGS"]["ENDDATE"]:
+                end_result = (datetime.now() - relativedelta(months=1)).strftime("%Y%m")  # go back 1 month.
+            else:
+                end_result = config["SETTINGS"]["ENDDATE"]
+        except Exception as e:
+            raise Exception(f"Error in start/end date configuration: {e}") from e
+
+    # Date validations
+    if start_date and end_date and start_date > end_date:
+        raise ValueError(f"Start date {start_date} cannot be after end date {end_date}.")
+
+    return start_result, end_result
+
+
+def get_extract_periods(start: str, end: str) -> list[str]:
+    """Generates a list of periods between start and end in YYYYMM format.
+
+    Returns
+    -------
+    list[str]
+        List of periods in YYYYMM format.
+    """
+    try:
+        # Get periods
+        start_period = period_from_string(start)
+        end_period = period_from_string(end)
+        extract_periods = (
+            [str(p) for p in start_period.get_range(end_period)]
+            if str(start_period) < str(end_period)
+            else [str(start_period)]
+        )
+    except Exception as e:
+        raise Exception(f"Error in start/end date configuration: {e!s}") from e
+    return extract_periods
+
+
+def resolve_user_provided_date(date: str) -> str:
+    """Resolves and validates user-provided date.
+
+    Returns
+    -------
+    str:
+        Resolved and validated start and end dates.
+    """
+    if not is_valid_yyyymm(date):
+        raise ValueError(f"Invalid date format: {date}. Expected YYYYMM ([2000/2100][01/12]).")
+
+    if is_after_today(date):
+        raise ValueError(f"Date cannot be in the future. Provided date: {date}.")
+
+    return adjust_to_previous_month_if_current(date)

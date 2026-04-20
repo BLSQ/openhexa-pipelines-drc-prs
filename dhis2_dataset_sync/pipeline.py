@@ -1,7 +1,6 @@
 import logging
 import shutil
 import time
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -11,17 +10,17 @@ from d2d_library.db_queue import Queue
 from d2d_library.dhis2_extract_handlers import DHIS2Extractor
 from d2d_library.dhis2_org_unit_aligner import DHIS2PyramidAligner
 from d2d_library.dhis2_pusher import DHIS2Pusher
-from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
 from openhexa.toolbox.dhis2.dataframe import get_datasets
-from openhexa.toolbox.dhis2.periods import period_from_string
 from requests.exceptions import HTTPError, RequestException
 from utils import (
     configure_logging_flush,
     connect_to_dhis2,
+    get_extract_periods,
     load_configuration,
     read_parquet_extract,
+    resolve_dates_and_validate,
     save_to_parquet,
     select_descendants,
 )
@@ -35,6 +34,26 @@ from utils import (
 
 
 @pipeline("dhis2_dataset_sync", timeout=43200)  # 3600 * 12 hours
+@parameter(
+    code="start_date",
+    name="Start date (format: YYYYMM)",
+    type=str,
+    required=False,
+    help=(
+        "Start date for data extraction in YYYYMM format. "
+        "If not set, it will default to current date minus NUMBER_MONTHS_WINDOW."
+    ),
+)
+@parameter(
+    code="end_date",
+    name="End date (format: YYYYMM)",
+    type=str,
+    required=False,
+    help=(
+        "End date for data extraction in YYYYMM format. "
+        "If not set, it will default to current date minus NUMBER_MONTHS_WINDOW."
+    ),
+)
 @parameter(
     code="run_ou_sync",
     name="Run org units sync (recommended)",
@@ -57,7 +76,7 @@ from utils import (
     default=True,
     help="Push data to target DHIS2.",
 )
-def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data: bool):
+def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data: bool, start_date: str, end_date: str):
     """Main pipeline function for DHIS2 dataset synchronization.
 
     Parameters
@@ -68,6 +87,11 @@ def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data:
         If True, runs the data extraction task (default is True).
     run_push_data : bool, optional
         If True, runs the data push task (default is True).
+    start_date : str
+        Start date for data extraction in YYYYMM format. If not set, it will
+        default to current date minus NUMBER_MONTHS_WINDOW (config).
+    end_date : str
+        End date for data extraction in YYYYMM format. If not set, it will default to current date minus 1.
 
     Raises
     ------
@@ -91,6 +115,8 @@ def dhis2_dataset_sync(run_ou_sync: bool, run_extract_data: bool, run_push_data:
         extract_data(
             pipeline_path=pipeline_path,
             run_task=run_extract_data,
+            start_date=start_date,
+            end_date=end_date,
             wait=datasets_ready,
         )
 
@@ -434,6 +460,8 @@ def extract_pyramid(
 def extract_data(
     pipeline_path: Path,
     run_task: bool = True,
+    start_date: str | None = None,
+    end_date: str | None = None,
     wait: bool = True,
 ):
     """Extracts data elements from the source DHIS2 instance and saves them in parquet format."""
@@ -442,50 +470,22 @@ def extract_data(
         return
 
     current_run.log_info("Data elements extraction task started.")
-
-    # load configuration
     extract_config = load_configuration(config_path=pipeline_path / "configuration" / "extract_config.json")
+
+    # NOTE: We need the filtered source pyramid to validate the org units (aligned org units).
+    source_pyramid = read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet")
+
+    # get dates and validate
+    start, end = resolve_dates_and_validate(start_date, end_date, extract_config)
+    extract_periods = get_extract_periods(start, end)
 
     # connect to source DHIS2 instance (No cache for data extraction)
     dhis2_client = connect_to_dhis2(
         connection_str=extract_config["SETTINGS"]["SOURCE_DHIS2_CONNECTION"], cache_dir=None
     )
-
-    # NOTE: We need the filtered source pyramid to validate the org units (aligned org units).
-    source_pyramid = read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet")
-
-    # initialize queue
-    db_path = pipeline_path / "configuration" / ".queue.db"
-    push_queue = Queue(db_path)
-
-    try:
-        months_lag = extract_config["SETTINGS"].get("NUMBER_MONTHS_WINDOW", 3)  # default 3 months window
-        if not extract_config["SETTINGS"]["STARTDATE"]:
-            start = (datetime.now() - relativedelta(months=months_lag)).strftime("%Y%m")
-        else:
-            start = extract_config["SETTINGS"]["STARTDATE"]
-        if not extract_config["SETTINGS"]["ENDDATE"]:
-            end = (datetime.now() - relativedelta(months=1)).strftime("%Y%m")  # go back 1 month.
-        else:
-            end = extract_config["SETTINGS"]["ENDDATE"]
-    except Exception as e:
-        raise Exception(f"Error in start/end date configuration: {e}") from e
-
     # limits
     dhis2_client.data_value_sets.MAX_DATA_ELEMENTS = 100
     dhis2_client.data_value_sets.MAX_ORG_UNITS = 100
-
-    try:
-        # Get periods
-        start_period = period_from_string(start)
-        end_period = period_from_string(end)
-        extract_periods = (
-            [str(p) for p in start_period.get_range(end_period)]
-            if str(start_period) < str(end_period)
-            else [str(start_period)]
-        )
-    except Exception as e:
-        raise Exception(f"Error in start/end date configuration: {e!s}") from e
 
     download_settings = extract_config["SETTINGS"].get("MODE", None)
     if download_settings is None:
@@ -497,6 +497,10 @@ def extract_data(
     dhis2_extractor = DHIS2Extractor(
         dhis2_client=dhis2_client, download_mode=download_settings, return_existing_file=False
     )
+
+    # initialize queue
+    db_path = pipeline_path / "configuration" / ".queue.db"
+    push_queue = Queue(db_path)
 
     current_run.log_info(f"Download MODE: {extract_config['SETTINGS']['MODE']} from: {start} to {end}")
     handle_data_element_extracts(
