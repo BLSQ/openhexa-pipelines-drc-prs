@@ -1,16 +1,10 @@
 import logging
-import shutil
 from pathlib import Path
 
 import pandas as pd
 from d2d_library.dataset_completion import DatasetCompletionSync
 from openhexa.sdk import current_run, pipeline, workspace
-from utils import (
-    configure_logging_flush,
-    connect_to_dhis2,
-    load_configuration,
-    read_parquet_extract,
-)
+from utils import configure_logging_flush, connect_to_dhis2, load_configuration, read_parquet_extract, save_logs
 
 
 @pipeline("dhis2_dataset_sync_completions", timeout=43200)
@@ -57,7 +51,6 @@ def sync_dataset_statuses(
 
     # setup logger
     logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="ds_sync")
-    # logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="ds_sync") # local testing
 
     # Push parameters
     import_strategy = target_config["SETTINGS"].get("IMPORT_STRATEGY", "CREATE_AND_UPDATE")
@@ -111,6 +104,8 @@ def sync_dataset_statuses(
                     ds_processed=processed_dir,
                     logger=logger,
                 )
+                # Save the reporting logs after each period sync to ensure we have logs on fail
+                save_logs(logs_file, output_dir=pipeline_path / "logs" / "ds_sync")
 
     except Exception as e:
         raise Exception(f"Error during dataset statuses sync: {e}") from e
@@ -161,7 +156,7 @@ def handle_dataset_completion(
             org_units=org_units_to_sync,
             parent_ou=province_uids,
             period=period,
-            logging_interval=4000,
+            saving_interval=1000,
             ds_processed_path=ds_processed,
         )
     except Exception as e:
@@ -193,14 +188,6 @@ def filter_extract_configs_by_folder(ds_sync_path: Path, config: dict) -> list:
         for extract in config.get("DATA_ELEMENTS", {}).get("EXTRACTS", [])
         if extract.get("EXTRACT_UID") in folder_names
     ]
-
-
-def save_logs(logs_file: Path, output_dir: Path) -> None:
-    """Moves all .log files from logs_path to output_dir."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if logs_file.is_file():
-        dest_file = output_dir / logs_file.name
-        shutil.copy(logs_file.as_posix(), dest_file.as_posix())
 
 
 if __name__ == "__main__":
