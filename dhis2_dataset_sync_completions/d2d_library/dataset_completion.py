@@ -487,7 +487,7 @@ class DatasetCompletionSync:
         json_data = self._try_parse_json(response)
         status = (json_data.get("status") or "").upper() if json_data else None
         if status in ("SUCCESS", "OK"):
-            self._log_message(f"Successful POST response for ds: {ds} pe:{pe} ou: {ou}")
+            self._log_message(f"Successful POST response for ds: {ds} pe:{pe} ou: {ou}", log_current_run=False)
             self._update_import_summary(response=json_data)
             return
 
