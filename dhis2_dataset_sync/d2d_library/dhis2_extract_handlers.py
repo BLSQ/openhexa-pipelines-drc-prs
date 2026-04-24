@@ -6,6 +6,107 @@ from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2 import DHIS2
 
 
+class AnanalyticsDataElementExtractor:
+    """Handles downloading and formatting of data elements from DHIS2."""
+
+    def __init__(self, extractor: "DHIS2Extractor"):
+        self.extractor = extractor
+
+    def download_period(
+        self, data_elements: list[str], org_units: list[str], period: str, output_dir: Path, filename: str | None = None
+    ) -> Path | None:
+        """Hacky solution due to the old version from where we're retrieving data elements.
+
+        NOTE: VERSION under 2.39 should not be supported (!).
+
+        Parameters
+        ----------
+        data_elements : list[str]
+            List of DHIS2 data element UIDs to extract.
+        org_units : list[str]
+            List of DHIS2 organization unit UIDs to extract data for.
+        period : str
+            DHIS2 period (valid format) to extract data for.
+        output_dir : Path
+            Directory where extracted data files will be saved.
+        filename : str | None
+            Optional filename for the extracted data file. If None, a default name will be used.
+
+        Returns
+        -------
+        Path | None
+            The path to the extracted data file, or None if no data was extracted.
+
+        Raises
+        ------
+        Exception
+            If an error occurs during the extract process.
+        """
+        try:
+            current_run.log_info(f"Retrieving data elements extract from analytics for period : {period}")
+            return self.extractor._handle_extract_for_period(
+                handler=self,
+                data_products=data_elements,
+                org_units=org_units,
+                period=period,
+                output_dir=output_dir,
+                filename=filename,
+            )
+        except Exception as e:
+            raise Exception(f"Extract data elements download error : {e}") from e
+
+    def _retrieve_data(self, data_elements: list[str], org_units: list[str], period: str) -> pd.DataFrame:
+        if not self.extractor._valid_dhis2_period_format(period):
+            raise ValueError(f"Invalid DHIS2 period format: {period}")
+        try:
+            response = self.extractor.dhis2_client.analytics.get(
+                data_elements=data_elements,
+                periods=[period],
+                org_units=org_units,
+                include_cocs=True,
+            )
+        except Exception as e:
+            raise Exception(f"Error retrieving data elements data: {e}") from e
+
+        return self._map_to_dhis2_format_analytics(pd.DataFrame(response))
+
+    def _map_to_dhis2_format_analytics(
+        self,
+        data: pd.DataFrame,
+    ) -> pd.DataFrame:
+        if data.empty:
+            return None
+
+        try:
+            data_format = pd.DataFrame(
+                columns=[
+                    "DATA_TYPE",
+                    "DX_UID",
+                    "PERIOD",
+                    "ORG_UNIT",
+                    "CATEGORY_OPTION_COMBO",
+                    "ATTRIBUTE_OPTION_COMBO",
+                    "RATE_TYPE",
+                    "DOMAIN_TYPE",
+                    "VALUE",
+                ]
+            )
+
+            data_format["DX_UID"] = data.dx
+            data_format["PERIOD"] = data.pe
+            data_format["ORG_UNIT"] = data.ou
+            data_format["CATEGORY_OPTION_COMBO"] = data.co
+            data_format["DOMAIN_TYPE"] = "AGGREGATED"
+            data_format["VALUE"] = data.value
+            data_format["DATA_TYPE"] = "DATA_ELEMENT"
+            return data_format
+
+        except AttributeError as e:
+            raise AttributeError(f"missing extract data, required attribute for format: {e}") from e
+        except Exception as e:
+            raise Exception(f"Unexpected Error while creating extract format table: {e}") from e
+
+
 class DataElementsExtractor:
     """Handles downloading and formatting of data elements from DHIS2."""
 
@@ -242,6 +343,7 @@ class DHIS2Extractor:
         self.data_elements = DataElementsExtractor(self)
         self.indicators = IndicatorsExtractor(self)
         self.reporting_rates = ReportingRatesExtractor(self)
+        self.analytics_data_elements = AnanalyticsDataElementExtractor(self)
         self.return_existing_file = return_existing_file
 
     def _handle_extract_for_period(

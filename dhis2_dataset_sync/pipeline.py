@@ -534,6 +534,7 @@ def push_data(
 
     # setup
     logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="push_data")
+    # logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="push_data")  # local
     config = load_configuration(config_path=pipeline_path / "configuration" / "push_config.json")
     target_dhis2 = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"], cache_dir=None)
     db_path = pipeline_path / "configuration" / ".queue.db"
@@ -743,13 +744,19 @@ def handle_data_element_extracts(
         return
 
     logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="extract_data")
+    # logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="extract_data")  # local
     current_run.log_info("Starting data element extracts.")
+    source_datasets = pl.DataFrame()  # NOTE: Default just to avoid ruff error
     try:
+        # NOTE: Dataset fetch turned off, not needed for PRS.
+        # source_datasets = get_datasets(dhis2_extractor.dhis2_client)
+
         # loop over the available extract configurations
         for idx, extract in enumerate(data_element_extracts):
             extract_id = extract.get("EXTRACT_UID")
             org_units_level = extract.get("ORG_UNITS_LEVEL", None)
             data_element_uids = extract.get("UIDS", [])
+            dataset_id = extract.get("DATASET_UID", None)
 
             if extract_id is None:
                 current_run.log_warning(
@@ -765,13 +772,25 @@ def handle_data_element_extracts(
                 current_run.log_warning(f"No data elements defined for extract: {extract_id}, extract skipped.")
                 continue
 
-            # get org units from the filtered pyramid
-            org_units = source_pyramid[source_pyramid["level"] == org_units_level]["id"].to_list()
-            current_run.log_info(
-                f"Starting data elements extract ID: '{extract_id}' ({idx + 1}) "
-                f"with {len(data_element_uids)} data elements across {len(org_units)} org units "
-                f"(level {org_units_level})."
-            )
+            if dataset_id:
+                try:
+                    source_dataset = source_datasets.filter(pl.col("id").is_in([dataset_id]))
+                    org_units = list(source_dataset["organisation_units"][0])
+                except Exception as e:
+                    raise Exception(f"Failed to fetch dataset {dataset_id} for extract {extract_id}: {e!s}") from e
+                current_run.log_info(
+                    f"Starting data elements extract ID: '{extract_id}' ({idx + 1}) "
+                    f"with {len(data_element_uids)} data elements across {len(org_units)} org units from dataset "
+                    f"'{source_dataset['name'][0]}' ({dataset_id})."
+                )
+            else:
+                # get org units from the filtered pyramid
+                org_units = source_pyramid[source_pyramid["level"] == org_units_level]["id"].to_list()
+                current_run.log_info(
+                    f"Starting data elements extract ID: '{extract_id}' ({idx + 1}) "
+                    f"with {len(data_element_uids)} data elements across {len(org_units)} org units "
+                    f"(level {org_units_level})."
+                )
 
             # run data elements extraction per period
             for period in extract_periods:
@@ -790,7 +809,7 @@ def handle_data_element_extracts(
                         f"Extract {extract_id} download failed for period {period}, skipping to next extract."
                     )
                     logger.error(f"Extract {extract_id} - period {period} error: {e}")
-                    break  # skip to next extract
+                    raise Exception(f"Extract {extract_id} - period {period} error: {e}") from e
 
             current_run.log_info(f"Extract {extract_id} finished.")
 
@@ -868,6 +887,10 @@ def apply_data_element_extract_config(
         uid_mappings = {k: v for k, v in uid_mappings.items() if v is not None}  # Do not replace with None
         uid_mappings_clean = {str(k).strip(): str(v).strip() for k, v in uid_mappings.items()}
         df_filtered["DX_UID"] = df_filtered.loc[:, "DX_UID"].replace(uid_mappings_clean)
+
+    # Complete with defaults
+    df_filtered["CATEGORY_OPTION_COMBO"] = df_filtered.loc[:, "CATEGORY_OPTION_COMBO"].replace({None: "HllvX50cXC0"})
+    df_filtered["ATTRIBUTE_OPTION_COMBO"] = df_filtered.loc[:, "ATTRIBUTE_OPTION_COMBO"].replace({None: "HllvX50cXC0"})
 
     return df_filtered
 

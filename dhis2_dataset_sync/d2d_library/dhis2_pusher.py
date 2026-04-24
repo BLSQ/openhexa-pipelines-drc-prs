@@ -21,8 +21,8 @@ class DHIS2Pusher:
         logger: logging.Logger | None = None,
     ):
         self.dhis2_client = dhis2_client
-        if import_strategy not in {"CREATE", "UPDATE", "CREATE_AND_UPDATE"}:
-            raise ValueError("Invalid import strategy (use 'CREATE', 'UPDATE' or 'CREATE_AND_UPDATE')")
+        if import_strategy not in {"CREATE", "UPDATE", "CREATE_AND_UPDATE", "DELETE"}:
+            raise ValueError("Invalid import strategy (use 'CREATE', 'UPDATE', 'DELETE' or 'CREATE_AND_UPDATE')")
         self.import_strategy = import_strategy
         self.dry_run = dry_run
         self.max_post = max_post
