@@ -3,12 +3,28 @@ from pathlib import Path
 
 import pandas as pd
 from d2d_library.dataset_completion import DatasetCompletionSync
-from openhexa.sdk import current_run, pipeline, workspace
+from openhexa.sdk import current_run, parameter, pipeline, workspace
 from utils import configure_logging_flush, connect_to_dhis2, load_configuration, read_parquet_extract, save_logs
 
 
 @pipeline("dhis2_dataset_sync_completions", timeout=43200)
-def dhis2_dataset_sync_completions():
+@parameter(
+    "start_date",
+    name="Start date",
+    help="Start date for dataset completion sync in YYYY-MM-DD format.",
+    default=None,
+    required=False,
+    type=str,
+)
+@parameter(
+    "end_date",
+    name="End date",
+    help="End date for dataset completion sync in YYYY-MM-DD format.",
+    default=None,
+    required=False,
+    type=str,
+)
+def dhis2_dataset_sync_completions(start_date: str, end_date: str):
     """Main pipeline function for DHIS2 dataset completion synchronization.
 
     NOTE: This pipeline must run after dhis2_dataset_sync, as it relies on the
@@ -18,7 +34,7 @@ def dhis2_dataset_sync_completions():
     """
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_dataset_sync_completions"
     try:
-        sync_dataset_statuses(pipeline_path=pipeline_path)
+        sync_dataset_statuses(pipeline_path=pipeline_path, start_date=start_date, end_date=end_date)
     except Exception as e:
         current_run.log_error(f"Dataset completion sync failed: {e}")
         raise
@@ -26,6 +42,8 @@ def dhis2_dataset_sync_completions():
 
 def sync_dataset_statuses(
     pipeline_path: Path,
+    start_date: str,
+    end_date: str,
 ):
     """Syncs dataset statuses between source and target DHIS2 instances.
 
@@ -77,12 +95,21 @@ def sync_dataset_statuses(
             if not extract_identification:
                 raise ValueError(f"Extract configuration is missing 'EXTRACT_UID': {extract_config}")
             ds_extract_dir = ds_sync_dir / extract_identification
-            sync_window = extract_config.get("SYNC_PERIOD_WINDOW", None)
-            files = sorted(list(ds_extract_dir.glob("ds_sync_*.parquet")))
-            files = files[-sync_window:] if sync_window else files
-            current_run.log_info(
-                f"Processing extract '{extract_identification}': {len(files)} period files to synchronize."
-            )
+            # NOTE: Temp solution -> needs validation of periods
+            if start_date and end_date:
+                files = sorted(list(ds_extract_dir.glob("ds_sync_*.parquet")))
+                files = filter_files_by_period(files=files, period_start=start_date, period_end=end_date)
+                current_run.log_info(
+                    f"Processing extract '{extract_identification}' with date "
+                    f"filtering: {start_date} to {end_date} ({len(files)} files matched)."
+                )
+            else:
+                sync_window = extract_config.get("SYNC_PERIOD_WINDOW", None)
+                files = sorted(list(ds_extract_dir.glob("ds_sync_*.parquet")))
+                files = files[-sync_window:] if sync_window else files
+                current_run.log_info(
+                    f"Processing extract '{extract_identification}': {len(files)} period files to synchronize."
+                )
 
             # Create processed directory for this extract
             processed_dir = pipeline_path / "data" / "dataset_sync_processed" / extract_identification
@@ -93,7 +120,7 @@ def sync_dataset_statuses(
 
                 # Set dataset competion for all org units for this period
                 handle_dataset_completion(
-                    completion_syncer,
+                    syncer=completion_syncer,
                     source_ds_id=extract_config.get("SOURCE_DATASET_UID"),
                     target_ds_id=extract_config.get("TARGET_DATASET_UID"),
                     dhis2_pyramid=read_parquet_extract(
@@ -104,13 +131,45 @@ def sync_dataset_statuses(
                     ds_processed=processed_dir,
                     logger=logger,
                 )
-                # Save the reporting logs after each period sync to ensure we have logs on fail
+                # Save the reporting logs after each sync period
                 save_logs(logs_file, output_dir=pipeline_path / "logs" / "ds_sync")
 
+        current_run.log_info("Dataset statuses sync completed successfully.")
     except Exception as e:
         raise Exception(f"Error during dataset statuses sync: {e}") from e
     finally:
         save_logs(logs_file, output_dir=pipeline_path / "logs" / "ds_sync")
+
+
+def filter_files_by_period(
+    files: list[Path],
+    period_start: str,
+    period_end: str,
+) -> list[Path]:
+    """Filter a list of files by period range extracted from the filename.
+
+    Expects filenames in the format `<prefix>_<period>.parquet` where period
+    is a string like '202601'.
+
+    Parameters
+    ----------
+    files : list[Path]
+        List of file paths to filter.
+    period_start : str
+        Start period (inclusive), e.g. '202601'.
+    period_end : str
+        End period (inclusive), e.g. '202603'.
+
+    Returns
+    -------
+    list[Path]
+        Files whose period falls within [period_start, period_end].
+    """
+
+    def extract_period(path: Path) -> str:
+        return path.stem.split("_")[-1]
+
+    return [f for f in files if period_start <= extract_period(f) <= period_end]
 
 
 def handle_dataset_completion(
