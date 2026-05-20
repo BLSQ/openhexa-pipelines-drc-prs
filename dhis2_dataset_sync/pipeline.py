@@ -889,8 +889,8 @@ def apply_data_element_extract_config(
         df_filtered["DX_UID"] = df_filtered.loc[:, "DX_UID"].replace(uid_mappings_clean)
 
     # Complete with defaults
-    df_filtered["CATEGORY_OPTION_COMBO"] = df_filtered.loc[:, "CATEGORY_OPTION_COMBO"].replace({None: "HllvX50cXC0"})
-    df_filtered["ATTRIBUTE_OPTION_COMBO"] = df_filtered.loc[:, "ATTRIBUTE_OPTION_COMBO"].replace({None: "HllvX50cXC0"})
+    df_filtered["CATEGORY_OPTION_COMBO"] = df_filtered["CATEGORY_OPTION_COMBO"].fillna("HllvX50cXC0")
+    df_filtered["ATTRIBUTE_OPTION_COMBO"] = df_filtered["ATTRIBUTE_OPTION_COMBO"].fillna("HllvX50cXC0")
 
     return df_filtered
 
