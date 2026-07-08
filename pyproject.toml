@@ -77,3 +77,6 @@ allow-star-arg-any = true
 mypy-init-return = true
 suppress-dummy-args = true
 suppress-none-returning = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
