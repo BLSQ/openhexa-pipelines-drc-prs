@@ -167,6 +167,7 @@ def sync_organisation_units(
         source_dhis2 = connect_to_dhis2(connection_str=source_conn, cache_dir=None)
         target_dhis2 = connect_to_dhis2(connection_str=target_conn, cache_dir=None)
 
+        # pyramid_selection_for_prs() Implement this inside this function
         align_org_units(
             pipeline_path=pipeline_path,
             source_dhis2=source_dhis2,
@@ -184,6 +185,36 @@ def sync_organisation_units(
         save_logs(logs_file, output_dir=pipeline_path / "logs" / "org_units")
 
     return True
+
+
+def pyramid_selection_for_prs(
+    pyramid: pl.DataFrame,
+    org_units_selection: list[str],
+    include_children: bool = True,
+) -> pl.DataFrame:
+    """Filter and select organisation units from the DHIS2 pyramid for the PRS extract.
+
+    -Keeps all descendants of the org_units_selection parents.
+    -If include_children is False, only the selected organisation units themselves are kept.
+
+    Args:
+        pyramid: Full organisation unit pyramid data.
+        org_units_selection: List of organisation unit ids to select. If empty, no selection filtering is applied.
+        include_children: If True, includes all descendants of the selected organisation units. If False, only the
+            selected organisation units themselves are kept.
+
+    Returns:
+        The filtered organisation unit pyramid.
+    """
+    org_units = pyramid.clone()
+    if org_units_selection:
+        if include_children:
+            org_units = select_descendants(org_units, org_units_selection)
+        else:
+            org_units = org_units.filter(pl.col("id").is_in(org_units_selection))
+
+    current_run.log_info(f"Selected organisation units: {org_units['id'].n_unique()}.")
+    return org_units
 
 
 def align_org_units(
