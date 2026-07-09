@@ -1,2 +1,1 @@
-openhexa.toolbox==2.8.3
-openhexa.sdk==2.9.0
+d2d_development @ git+https://github.com/BLSQ/openhexa-ds-developments.git#subdirectory=d2d_development
