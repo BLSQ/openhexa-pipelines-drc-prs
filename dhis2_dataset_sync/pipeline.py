@@ -81,9 +81,7 @@ def dhis2_dataset_sync(run_ou_sync: bool, run_push_data: bool, force_run: bool) 
     if to_update or force_run:
         current_run.log_info("New data version detected. Starting pipeline execution...")
         try:
-            get_files_from_dataset(
-                dataset_id=dataset_id, output_path=pipeline_path / "data" / "extracts" / "data_elements"
-            )
+            get_files_from_dataset(dataset_id=dataset_id, output_path=pipeline_path / "data")
         except Exception as e:
             current_run.log_error(f"Error loading dataset files: {e}")
             raise
@@ -158,10 +156,16 @@ def get_files_from_dataset(dataset_id: str, output_path: Path) -> None:
     # Load data files
     updates_files = get_file_from_dataset(dataset_id=dataset_id, filename="updates_collector.json")
     for key, fnames in updates_files.items():
+        if key == "pyramid":
+            current_run.log_info(f"Loading file: {fnames[0]}")  # only one file
+            df_data = get_file_from_dataset(dataset_id=dataset_id, filename=fnames[0])
+            save_to_parquet(data=df_data, filename=output_path / key / fnames[0])
+            continue
+
         for fname in fnames:
             current_run.log_info(f"Loading file: {fname}")
             df_data = get_file_from_dataset(dataset_id=dataset_id, filename=fname)
-            save_to_parquet(data=df_data, filename=output_path / key / fname)
+            save_to_parquet(data=df_data, filename=output_path / "extracts" / "data_elements" / key / fname)
 
 
 def sync_organisation_units(
