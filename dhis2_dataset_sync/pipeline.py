@@ -49,6 +49,14 @@ from utils import (
     help="Push data to target DHIS2.",
 )
 @parameter(
+    code="load_ds_files",
+    name="Load dataset files",
+    help="Load the files from the dataset.",
+    type=bool,
+    default=True,
+    required=False,
+)
+@parameter(
     code="force_run",
     name="Force run",
     help="Force the pipeline to run even if no new data is detected.",
@@ -56,12 +64,13 @@ from utils import (
     default=False,
     required=False,
 )
-def dhis2_dataset_sync(run_ou_sync: bool, run_push_data: bool, force_run: bool) -> None:
+def dhis2_dataset_sync(run_ou_sync: bool, run_push_data: bool, load_ds_files: bool, force_run: bool) -> None:
     """Main pipeline function for DHIS2 dataset synchronization.
 
     Args:
         run_ou_sync: If True, runs the organisation units and dataset organisation units sync tasks.
         run_push_data: If True, runs the data push task.
+        load_ds_files: If True, loads the dataset files from the specified dataset.
         force_run: If True, forces the pipeline to run even if no new dataset version is detected.
     """
     pipeline_path = Path(workspace.files_path) / "pipelines" / "dhis2_dataset_sync"
@@ -80,11 +89,12 @@ def dhis2_dataset_sync(run_ou_sync: bool, run_push_data: bool, force_run: bool) 
 
     if to_update or force_run:
         current_run.log_info("New data version detected. Starting pipeline execution...")
-        try:
-            get_files_from_dataset(dataset_id=dataset_id, output_path=pipeline_path / "data")
-        except Exception as e:
-            current_run.log_error(f"Error loading dataset files: {e}")
-            raise
+        if load_ds_files:
+            try:
+                get_files_from_dataset(dataset_id=dataset_id, output_path=pipeline_path / "data")
+            except Exception as e:
+                current_run.log_error(f"Error loading dataset files: {e}")
+                raise
 
         sync_organisation_units(
             pipeline_path=pipeline_path,
@@ -462,6 +472,7 @@ def push_data(
 
     # Get the list of files to push from the dataset
     update_files = get_file_from_dataset(dataset_id=dataset_id, filename="updates_collector.json")
+    update_files.pop("pyramid", None)  # Remove the pyramid node
 
     # loop over the extracts
     for extract_id, fnames in update_files.items():
@@ -473,6 +484,16 @@ def push_data(
             current_run.log_warning(f"No configuration found for extract {extract_id}. Skipping.")
             continue
 
+        if extract_config.get("TARGET_DATASET_UID"):
+            try:
+                dataset_info = retrieve_dataset_info(target_dhis2, extract_config.get("TARGET_DATASET_UID"))
+            except Exception as e:
+                current_run.log_error(
+                    f"Failed to retrieve dataset info for {extract_config.get('TARGET_DATASET_UID')}. Error: {e}"
+                )
+                continue
+
+        # Loop over the files in the dataset
         for fname in fnames:
             extract_path = pipeline_path / "data" / "extracts" / extract_type / extract_id / fname
 
@@ -499,11 +520,15 @@ def push_data(
                 continue
 
             # filter by the org units which are part of the target dataset (if set)
+            # NOTE: The extracts are already filtered by the selection of the 20 provinces
+            # (see: configuration/sync_config.json), this additional filtering makes sure
+            # there are only data points for those org units part of the target dataset (PRS).
             if extract_config.get("TARGET_DATASET_UID"):
                 extract_data = filter_by_dataset_org_units(
                     target_dhis2=target_dhis2,
                     data=extract_data,
                     dataset_id=extract_config.get("TARGET_DATASET_UID"),
+                    ds_org_units=dataset_info["organisationUnits"],
                 )
 
             try:
@@ -572,7 +597,7 @@ def prepare_dataset_sync_data(pipeline_path: Path, extract_config: dict, df_mapp
 
 
 def filter_by_dataset_org_units(
-    target_dhis2: DHIS2, data: pd.DataFrame | pl.DataFrame, dataset_id: str
+    target_dhis2: DHIS2, data: pd.DataFrame | pl.DataFrame, dataset_id: str, ds_org_units: list
 ) -> pl.DataFrame:
     """Filters the provided data to include only rows with organisation units present in the specified DHIS2 dataset.
 
@@ -580,6 +605,7 @@ def filter_by_dataset_org_units(
         target_dhis2: DHIS2 client for the target instance.
         data: DataFrame containing the data to be filtered.
         dataset_id: The ID of the dataset whose organisation units will be used for filtering.
+        ds_org_units: List of organisation unit dicts (each with an "id" key) belonging to the dataset.
 
     Returns:
         Filtered DataFrame containing only rows with organisation units present in the dataset.
@@ -590,17 +616,45 @@ def filter_by_dataset_org_units(
         ValueError: If the dataset payload is malformed, has no organisation units, or if no data
             remains after filtering.
     """
-    if not dataset_id:
-        return data
-
     if isinstance(data, pd.DataFrame):
         data = pl.from_pandas(data)
 
+    ds_uids = [ou["id"] for ou in ds_org_units]  # dataset_payload["organisationUnits"]]
+    data_filtered = data.filter(pl.col("org_unit").is_in(ds_uids))
+    current_run.log_info(
+        f"Extract filtered by dataset {dataset_id} with OUs: {len(ds_uids)}. "
+        f"Data points removed from import data: {data.shape[0] - data_filtered.shape[0]}"
+    )
+
+    if data_filtered.shape[0] == 0:
+        raise ValueError(
+            f"After filtering by dataset {dataset_id} org units, no data remains. "
+            f"Check that source data org units match the target dataset's {len(ds_uids)} org units."
+        )
+
+    return data_filtered
+
+
+def retrieve_dataset_info(dhis2_client: DHIS2, dataset_id: str) -> dict:
+    """Retrieves the dataset information from the DHIS2 API.
+
+    Args:
+        dhis2_client: DHIS2 client for the target instance.
+        dataset_id: The ID of the dataset to retrieve.
+
+    Returns:
+        The dataset payload, including its organisation units.
+
+    Raises:
+        RuntimeError: If an error occurs while fetching the dataset payload, or if the DHIS2 API
+            returns an error response.
+        ValueError: If the response is not a dictionary, or the dataset has no organisation units.
+    """
     # GET current dataset from PRS DHIS2
-    url = f"{target_dhis2.api.url}/dataSets/{dataset_id}?fields=id,organisationUnits[id]"
+    url = f"{dhis2_client.api.url}/dataSets/{dataset_id}?fields=id,organisationUnits[id]"
     current_run.log_info(f"Fetching dataset from: {url}")
     try:
-        dataset_payload = dhis2_request(target_dhis2.api.session, "get", url)
+        dataset_payload = dhis2_request(dhis2_client.api.session, "get", url)
     except Exception as e:
         raise RuntimeError(f"Unexpected error during payload fetch for dataset {dataset_id}: {e!s}") from e
 
@@ -626,20 +680,7 @@ def filter_by_dataset_org_units(
             f"Cannot proceed with data push - dataset must have org units configured."
         )
 
-    ds_uids = [ou["id"] for ou in dataset_payload["organisationUnits"]]
-    data_filtered = data.filter(pl.col("org_unit").is_in(ds_uids))
-    current_run.log_info(
-        f"Extract filtered by dataset {dataset_id} with OUs: {len(ds_uids)}. "
-        f"Data points removed from import data: {data.shape[0] - data_filtered.shape[0]}"
-    )
-
-    if data_filtered.shape[0] == 0:
-        raise ValueError(
-            f"After filtering by dataset {dataset_id} org units, no data remains. "
-            f"Check that source data org units match the target dataset's {len(ds_uids)} org units."
-        )
-
-    return data_filtered
+    return dataset_payload
 
 
 def apply_data_element_extract_config(
