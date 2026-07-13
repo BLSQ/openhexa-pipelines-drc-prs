@@ -124,7 +124,7 @@ def sync_dataset_statuses(
                     source_ds_id=extract_config.get("SOURCE_DATASET_UID"),
                     target_ds_id=extract_config.get("TARGET_DATASET_UID"),
                     dhis2_pyramid=read_parquet_extract(
-                        dhis2_dataset_sync_path / "data" / "pyramid" / "pyramid_data.parquet"
+                        dhis2_dataset_sync_path / "data" / "pyramid" / "snis_prs_data.parquet"
                     ),
                     period=period,
                     ds_sync_fname=file,
