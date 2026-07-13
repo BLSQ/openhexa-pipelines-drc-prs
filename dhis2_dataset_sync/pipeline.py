@@ -590,7 +590,7 @@ def prepare_dataset_sync_data(pipeline_path: Path, extract_config: dict, df_mapp
         current_run.log_warning("Mapping table must contain an 'org_unit' column. ds_sync backup skipped.")
         return
 
-    unique_org_units_df = df_mapped.select("org_unit").unique()
+    unique_org_units_df = df_mapped.select("org_unit").unique().rename({"org_unit": "ORG_UNIT"})
     output_path = dataset_dir / f"ds_sync_{period}.parquet"
     unique_org_units_df.write_parquet(output_path)
     current_run.log_info(f"Dataset sync org units saved: {output_path}")
