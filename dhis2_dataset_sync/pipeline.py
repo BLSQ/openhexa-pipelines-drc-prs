@@ -1,5 +1,6 @@
 import logging
 import shutil
+import typing
 from datetime import datetime
 from pathlib import Path
 
@@ -133,7 +134,7 @@ def should_push_data(dataset_id: str, timestamp_path: Path) -> bool:
     try:
         new_version_dt = get_dataset_version_timestamp(dataset_id=dataset_id)
     except Exception as e:
-        current_run.log_error(f"{e}")
+        current_run.log_error(f"Dataset {dataset_id} is not accessible, stopping pipeline execution. Details: {e}")
         return False
 
     # read last run timestamp from file
@@ -195,7 +196,7 @@ def sync_organisation_units(
     """
     if not run_task:
         current_run.log_info("Organisation units sync task skipped.")
-        return True
+        return
 
     logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="org_units_sync")
 
@@ -262,7 +263,7 @@ def sync_dataset_organisation_units(
     """
     if not run_task:
         current_run.log_info("Dataset organisation units sync task skipped.")
-        return True
+        return
 
     current_run.log_info("Starting dataset organisation units sync.")
     logger, logs_file = configure_logging_flush(
@@ -382,6 +383,10 @@ def align_dataset_org_units(
             source_ds_ou = [ou for ou in source_ds_ou if ou in valid_ous]
 
         target_ds_ids = dataset_mappings[source_ds["id"]]
+        # safe guard against single string instead of list of strings
+        if isinstance(target_ds_ids, str):
+            target_ds_ids = [target_ds_ids]
+
         target_ds = target_datasets.filter(pl.col("id").is_in(target_ds_ids))
         if target_ds.is_empty():
             current_run.log_warning(f"Dataset id: {dataset_mappings[source_ds['id']]} not found in DHIS2 target.")
@@ -710,6 +715,9 @@ def apply_data_element_extract_config(
         current_run.log_warning("No extract mappings provided, skipping data element mappings.")
         return df
 
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
     # Loop over the configured data element mappings to filter by COC/AOC if provided
     current_run.log_info(f"Applying data element mappings for extract: {extract_config.get('EXTRACT_UID')}.")
     chunks = []
@@ -797,7 +805,7 @@ def push_dataset_org_units(dhis2_client: DHIS2, dataset_id: str, new_org_units: 
     return update_response
 
 
-def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: any) -> dict:
+def dhis2_request(session: requests.Session, method: str, url: str, **kwargs: typing.Any) -> dict:
     """Wrapper around requests to handle DHIS2 GET/PUT with error handling.
 
     Args:
