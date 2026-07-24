@@ -530,7 +530,6 @@ def push_data(
             # there are only data points for those org units part of the target dataset (PRS).
             if extract_config.get("TARGET_DATASET_UID"):
                 extract_data = filter_by_dataset_org_units(
-                    target_dhis2=target_dhis2,
                     data=extract_data,
                     dataset_id=extract_config.get("TARGET_DATASET_UID"),
                     ds_org_units=dataset_info["organisationUnits"],
@@ -601,13 +600,10 @@ def prepare_dataset_sync_data(pipeline_path: Path, extract_config: dict, df_mapp
     current_run.log_info(f"Dataset sync org units saved: {output_path}")
 
 
-def filter_by_dataset_org_units(
-    target_dhis2: DHIS2, data: pd.DataFrame | pl.DataFrame, dataset_id: str, ds_org_units: list
-) -> pl.DataFrame:
+def filter_by_dataset_org_units(data: pd.DataFrame | pl.DataFrame, dataset_id: str, ds_org_units: list) -> pl.DataFrame:
     """Filters the provided data to include only rows with organisation units present in the specified DHIS2 dataset.
 
     Args:
-        target_dhis2: DHIS2 client for the target instance.
         data: DataFrame containing the data to be filtered.
         dataset_id: The ID of the dataset whose organisation units will be used for filtering.
         ds_org_units: List of organisation unit dicts (each with an "id" key) belonging to the dataset.
