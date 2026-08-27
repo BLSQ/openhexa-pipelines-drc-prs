@@ -2,14 +2,17 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-# import pandas as pd
 import polars as pl
+from cmm_utils import (
+    apply_formulas_to_extract,
+    compute_mean_and_format_results,
+    get_fosa_descendants_of_zs,
+)
 from d2d_development.push import DHIS2Pusher
-from d2d_library.dhis2.org_unit_aligner import DHIS2PyramidAligner
+from d2d_library.org_unit_aligner import DHIS2PyramidAligner
 from dateutil.relativedelta import relativedelta
 from openhexa.sdk import current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
-from openhexa.toolbox.dhis2.dataframe import get_organisation_unit_groups
 from utils import (
     configure_logging_flush,
     connect_to_dhis2,
@@ -20,6 +23,7 @@ from utils import (
     read_json_file,
     read_parquet_extract,
     resolve_dates_and_validate,
+    save_json_file,
     save_logs,
     save_to_parquet,
 )
@@ -122,26 +126,26 @@ def dhis2_cmm_morbidity_ds(
             run_task=run_ou_sync,
         )
 
-        # compute_cmm_morbidity_indicators(
-        #     pipeline_path=pipeline_path,
-        #     start_date=start_date,
-        #     end_date=end_date,
-        #     config=config,
-        #     cmm_config=read_json_file(pipeline_path / "configuration" / "cmm_config.json"),
-        # )
+        files_to_push = compute_cmm_morbidity_indicators(
+            pipeline_path=pipeline_path,
+            start_date=start_date,
+            end_date=end_date,
+            config=config,
+            cmm_config=read_json_file(pipeline_path / "configuration" / "cmm_config.json"),
+        )
 
-        # push_data(
-        #     pipeline_path=pipeline_path,
-        #     config=config,
-        #     start_date=start_date,
-        #     end_date=end_date,
-        #     run_task=run_push_data,
-        # )
+        push_data(
+            pipeline_path=pipeline_path,
+            config=config,
+            files_to_push=files_to_push,
+            run_task=run_push_data,
+        )
 
-        # update_last_run_timestamp(
-        #     timestamp_filename=pipeline_path / "configuration" / "last_update.json",
-        #     dataset_id=dataset_id,
-        # )
+        update_last_run_timestamp(
+            timestamp_filename=pipeline_path / "configuration" / "last_update.json",
+            dataset_id=dataset_id,
+            run_task=run_push_data,
+        )
     else:
         current_run.log_info("No new data version detected. Pipeline execution skipped.")
 
@@ -156,8 +160,8 @@ def sync_organisation_units(
         current_run.log_info("Organisation units sync task skipped.")
         return True
 
-    # logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="org_units_sync")
-    logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="org_units_sync")  ## Local
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="ou_sync")
+    # logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="ou_sync")  ## Local
 
     # load configuration
     target_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
@@ -171,7 +175,7 @@ def sync_organisation_units(
     except Exception as e:
         raise Exception(f"Error during pyramid sync: {e}") from e
     finally:
-        save_logs(logs_file, output_dir=pipeline_path / "logs" / "org_units_sync")
+        save_logs(logs_file, output_dir=pipeline_path / "logs" / "ou_sync")
 
 
 def sync_organisation_unit_groups(
@@ -187,19 +191,19 @@ def sync_organisation_unit_groups(
 
     current_run.log_info("Starting update of organisation unit groups.")
 
-    # logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="oug_sync")
-    logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="oug_sync")  ## local
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="oug_sync")
+    # logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="oug_sync")  ## local
     prs_conn = config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")
 
     for oug_source, oug_target in sync_config.get("ORG_UNIT_GROUPS", {}).items():
         current_run.log_info(f"Syncing organisation unit group. Source: {oug_source} to target: {oug_target}")
         try:
             sync_org_units_groups(
-                ou_groups=read_json_file(pipeline_path / "data" / "org_unit_groups" / "org_unit_groups.parquet"),
+                ou_groups=pl.read_parquet(pipeline_path / "data" / "org_unit_groups" / "org_unit_groups.parquet"),
                 dhis2_client_target=connect_to_dhis2(connection_str=prs_conn),
                 source_oug_id=oug_source,
                 target_oug_id=oug_target,
-                pyramid=read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet"),
+                pyramid=pl.read_parquet(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet"),
                 logger=logger,
             )
         except Exception as e:
@@ -218,7 +222,7 @@ def sync_org_units_groups(
     pyramid: pl.DataFrame | None = None,
     validation_level: int | None = 3,
     logger: logging.Logger | None = None,
-) -> dict:
+) -> None:
     """Syncs organisation unit groups between source and target datasets in DHIS2.
 
     NOTE: This is PRS specific.
@@ -231,10 +235,6 @@ def sync_org_units_groups(
         pyramid: Optional DataFrame containing the pyramid structure for validation.
         validation_level: Optional integer specifying the level of validation for filtering organisation units.
         logger: Optional logger for logging messages.
-
-    Returns:
-        A dictionary containing the response from the DHIS2 API after attempting to update the
-          target organisation unit group.
     """
     source_oug = ou_groups.filter(pl.col("id").is_in([source_oug_id]))
     source_ous = source_oug["organisation_units"].explode().to_list()
@@ -247,16 +247,18 @@ def sync_org_units_groups(
         url=url,
     )
     if "error" in oug_payload:
-        return oug_payload
+        current_run.log_error(f"Error retrieving organisation unit group {target_oug_id}: {oug_payload['error']}")
+        logger.info(f"Error retrieving organisation unit group {target_oug_id}: {oug_payload['error']}")
+        return
 
     target_ous = set([ou.get("id") for ou in oug_payload["organisationUnits"]])
 
     # filter both lists of ids if they are part of the target 20 provinces (PRS specific)
     # level 3 are zones de sante
     if pyramid is not None:
-        valid_ous = pyramid[pyramid.level == validation_level]["id"].to_list()
-        source_ous = [ou_id for ou_id in source_ous if ou_id in valid_ous]
-        target_ous = set([ou_id for ou_id in target_ous if ou_id in valid_ous])
+        valid_ous = pyramid.filter(pl.col("level") == validation_level)["id"].to_list()
+        source_ous = [ou_id for ou_id in source_ous if ou_id in valid_ous]  # Filter
+        target_ous = [ou_id for ou_id in target_ous if ou_id in valid_ous]  # Filter
 
     # here first check if the list of ids is different
     to_add = set(source_ous) - set(target_ous)  # missing in target
@@ -264,13 +266,16 @@ def sync_org_units_groups(
     diff_org_units = to_add | to_remove
     if len(diff_org_units) == 0:
         current_run.log_info("Source and target dataset organisation units are in sync, no update needed.")
-        return {"status": "skipped", "message": "No update needed, org units are identical."}
+        logger.info("Source and target dataset organisation units are in sync, no update needed.")
+        return
 
-    current_run.log_info(
+    msg = (
         f"Found {len(diff_org_units)} different org units in target dataset '{oug_payload['name']}' ({target_oug_id})."
     )
+    current_run.log_info(msg)
+    logger.info(msg)
 
-    # Update organisationUnits (just push the source OUs)
+    # NOTE: Update organisationUnits (just push the source OUs)
     oug_payload["organisationUnits"] = [{"id": ou_id} for ou_id in source_ous]
 
     # PUT updated organisation units group
@@ -283,14 +288,13 @@ def sync_org_units_groups(
     )
 
     if "error" in update_response:
-        current_run.log_info(f"Error updating organisation units group {target_oug_id}: {update_response['error']}")
-        logger.error(f"Error updating organisation units group {target_oug_id}: {update_response['error']}")
+        msg = f"Error updating organisation units group {target_oug_id}: {update_response['error']}"
+        current_run.log_error()
+        logger.error(msg)
     else:
         msg = f"organisation unit group '{oug_payload['name']}' ({target_oug_id}) org units set: {len(source_ous)}"
         current_run.log_info(msg)
         logger.info(msg)
-
-    return update_response
 
 
 def compute_cmm_morbidity_indicators(
@@ -299,8 +303,12 @@ def compute_cmm_morbidity_indicators(
     end_date: str,
     config: dict,
     cmm_config: dict,
-):
-    """Computes CMM morbidity indicators based on the extracted data elements."""
+) -> list[Path]:
+    """Computes CMM morbidity indicators based on the extracted data elements.
+
+    Returns:
+        A list of paths to the generated CMM morbidity indicator files.
+    """
     data_source_path = pipeline_path / "data" / "extracts" / "data_elements"
     data_output_path = pipeline_path / "data" / "cmm_morbidity"
 
@@ -311,17 +319,20 @@ def compute_cmm_morbidity_indicators(
     extract_periods = get_extract_periods(start, end)
 
     try:
+        oug_id = cmm_config["CMM_SETTINGS"].get("OUG_URBAN", "cOK4Feyi0nP")
+        current_run.log_info(f"Retrieving Organization Units for Urban Health Zones under OUG '{oug_id}'")
         level5_under_zs = get_fosa_descendants_of_zs(
-            source_pyramid=read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet"),
-            dhis2_client=config["SETTINGS"].get("TARGET_DHIS2_CONNECTION"),
-            oug_id=cmm_config["CMM_SETTINGS"].get("OUG_URBAN", "cOK4Feyi0nP"),
+            pyramid=read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet"),
+            dhis2_client=connect_to_dhis2(config["SETTINGS"].get("TARGET_DHIS2_CONNECTION")),
+            oug_id=oug_id,
         )
     except Exception as e:
         current_run.log_error(f"Error retrieving FOSA descendants of urban Zones de sante: {e}")
         raise
 
+    cmm_file_results = []
+    formulas = cmm_config.get("CMM_SETTINGS", {}).get("FORMULAS", {})
     for period in extract_periods:
-        formulas = cmm_config.get("CMM_SETTINGS", {}).get("FORMULAS", {})
         cmm_start = (datetime.strptime(period, "%Y%m") - relativedelta(months=cmm_window)).strftime("%Y%m")
         cmm_end = (datetime.strptime(period, "%Y%m") - relativedelta(months=1)).strftime("%Y%m")
         cmm_periods = get_extract_periods(cmm_start, cmm_end)
@@ -365,185 +376,125 @@ def compute_cmm_morbidity_indicators(
         extract_path = data_output_path / extract_uid / f"cmm_morbidity_{period}.parquet"
         extract_path.parent.mkdir(parents=True, exist_ok=True)
         cmm_morbidity.write_parquet(extract_path)
+        cmm_file_results.append(extract_path)
         current_run.log_info(f"CMM morbidity indicators saved: {extract_path.name}")
 
-
-def get_formulas_for_extract(extract_uid: str, cmm_extracts: list) -> list:
-    """Returns the list of rules for the matching extract UID.
-
-    Args:
-        extract_uid: The UID of the extract.
-        cmm_extracts: The list of all cmm extract formulas.
-
-    Returns:
-        A list of rules corresponding to the given extract UID.
-    """
-    for rule in cmm_extracts:
-        if rule.get("EXTRACT_UID") == extract_uid:
-            return rule.get("FORMULAS", [])
-    return []
+    return cmm_file_results
 
 
-def get_fosa_descendants_of_zs(pyramid: pl.DataFrame, dhis2_client: DHIS2, oug_id: str) -> list:
-    """Retrieves the list of FOSA organisation units that are descendants of urban Zones de sante.
+def push_data(
+    pipeline_path: Path,
+    config: dict,
+    files_to_push: list[Path],
+    run_task: bool = True,
+) -> None:
+    """Pushes data elements to the target DHIS2 instance."""
+    if not run_task:
+        current_run.log_info("Data push task skipped.")
 
-    Args:
-        pyramid: The organisation units pyramid as a Polars DataFrame.
-        dhis2_client: The DHIS2 client instance.
-        oug_id: The organisation unit group ID for urban Zones de sante.
+    current_run.log_info("Starting data push.")
 
-    Returns:
-        List of level 5 organisation unit IDs that are descendants of urban Zones de sante.
-    """
-    current_run.log_info(f"Retrieving Organization Units for Urban Health Zones under OUG '{oug_id}'")
-    ou_groups = get_organisation_unit_groups(dhis2_client)
-    zs_urban = ou_groups.filter(pl.col("id") == oug_id)
-    zs_urban_list = zs_urban["organisation_units"].explode().to_list()
-    parent_map = dict(
-        zip(
-            pyramid["id"],
-            pyramid["parent"].apply(lambda x: x["id"] if isinstance(x, dict) else None),
-            strict=True,
-        )
+    # setup
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="push_data")
+    # logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="push_data")  ## Local
+    target_dhis2 = connect_to_dhis2(connection_str=config["SETTINGS"]["TARGET_DHIS2_CONNECTION"])
+
+    # Push parameters
+    import_strategy = config["SETTINGS"].get("IMPORT_STRATEGY", "CREATE_AND_UPDATE")
+    dry_run = config["SETTINGS"].get("DRY_RUN", True)
+    max_post = config["SETTINGS"].get("MAX_POST", 500)
+
+    # log parameters
+    logger.info(f"Import strategy: {import_strategy} - Dry Run: {dry_run} - Max Post elements: {max_post}")
+    current_run.log_info(
+        f"Pushing data with parameters import_strategy: {import_strategy}, dry_run: {dry_run}, max_post: {max_post}"
     )
-    level5 = pyramid[pyramid["level"] == 5]["id"]
 
-    def get_zs_parent(ou: str) -> str | None:
-        """Climb 5 → 4 → 3.
+    # Set up DHIS2 pusher
+    pusher = DHIS2Pusher(
+        dhis2_client=target_dhis2,
+        import_strategy=import_strategy,
+        dry_run=dry_run,
+        max_post=max_post,
+        logger=logger,
+        cache_path=pipeline_path / "cache" / "cmm_push",
+    )
 
-        Returns:
-          level 3 parent of level 5 org unit.
-        """
-        p4 = parent_map.get(ou)
-        if not p4:
-            return None
-        return parent_map.get(p4)
+    # loop over the queue
+    extract_mappings = config.get("CMM_MAPPINGS", {})
+    if len(extract_mappings) == 0:
+        current_run.log_warning("No extract mappings provided, skipping data push.")
+        return
 
-    return [ou for ou in level5 if get_zs_parent(ou) in zs_urban_list]
+    for cmm_file in files_to_push:
+        try:
+            extract_data = read_parquet_extract(cmm_file)
+        except Exception as e:
+            current_run.log_error(f"Failed to read extract from queue item: {cmm_file.name}. Error: {e}")
+            continue
 
-
-def apply_formulas_to_extract(
-    data: pl.DataFrame,
-    formulas: list,
-    ou_urban: list,
-) -> pl.DataFrame:
-    """Applies the given rules to the extract data and computes the results.
-
-    Args:
-        data: The extract data as a Polars DataFrame.
-        formulas: The list of rules to apply.
-        ou_urban: A list of org units which are considered Urban.
-
-    Returns:
-        The resulting DataFrame after applying the rules.
-    """
-    results = []
-    for indicator, formula in formulas.items():
-        expr = build_expr(formula, ou_urban=ou_urban)
-
-        df = (
-            data.group_by(["PERIOD", "ORG_UNIT"])
-            .agg(expr.sum().alias("VALUE"))
-            .with_columns(pl.lit(indicator).alias("indicator"))
-        )
-
-        results.append(df)
-
-    return pl.concat(results)
-
-
-def build_expr(node: dict, ou_urban: list) -> pl.Expr:
-    """Recursively builds a Polars expression from a formula node.
-
-    Args:
-        node: A dictionary representing a formula node, which can be a data element, sum, multiply, or constant.
-        ou_urban: A list of org units which are considered Urban.
-
-    Returns:
-        A Polars expression representing the computation defined by the node.
-    """
-    if ou_urban is None:
-        ou_urban = []
-
-    # Leaf: data element
-    if "dataElement" in node:
-        return (
-            pl.when(
-                (pl.col("DX_UID") == node["dataElement"])
-                & (pl.col("CATEGORY_OPTION_COMBO") == node["categoryOptionCombo"])
+        try:
+            current_run.log_info(f"Pushing data for extract {cmm_file.name}.")
+            # NOTE: cmm specific mappings
+            df_mapped = apply_cmm_indicators_extract_config(extract_data, extract_mappings, logger=logger)
+            pusher.push_data(df_data=df_mapped)
+            current_run.log_info(f"Data push finished for extract: {cmm_file.name}.")
+        except Exception as e:
+            current_run.log_error(
+                f"Fatal error for cmm results push '{cmm_file.name}', stopping push process. Error: {e!s}"
             )
-            .then(pl.col("VALUE"))
-            .otherwise(0)
-        )
+            raise  # crash on error
 
-    node_type = node["type"]
-
-    if node_type == "sum":
-        return sum(build_expr(item, ou_urban) for item in node["items"])
-
-    if node_type == "multiply":
-        return build_expr(node["left"], ou_urban) * build_expr(node["right"], ou_urban)
-
-    if node_type == "constant":
-        return pl.lit(node["value"])
-
-    if node_type == "if":
-        cond = build_condition(node["condition"], ou_check=ou_urban)
-        return pl.when(cond).then(build_expr(node["then"], ou_urban)).otherwise(build_expr(node["else"], ou_urban))
-
-    raise NotImplementedError(f"Unsupported node type: {node_type}")
+        finally:
+            save_logs(logs_file, output_dir=pipeline_path / "logs" / "push")
 
 
-def build_condition(cond: dict, ou_check: list) -> pl.Expr | None:
-    """Build a Polars expression for a given condition.
+def apply_cmm_indicators_extract_config(
+    df: pl.DataFrame, extract_mappings: dict, logger: logging.Logger | None = None
+) -> pl.DataFrame:
+    """Applies data element mappings to the CMM indicators.
 
     Args:
-        cond: The condition dictionary.
-        ou_check: A list of org units.
+        df: DataFrame containing the extracted data.
+        extract_mappings: Dictionary containing the extract mappings.
+        logger: Optional logger for logging messages.
 
     Returns:
-        The Polars expression representing the condition, or None if not applicable.
+        DataFrame with the applied data element mappings.
     """
-    if cond["type"] == "orgUnitInGroupDescendant":
-        return pl.col("ORG_UNIT").is_in(ou_check)
-    return None
+    if len(extract_mappings) == 0:
+        current_run.log_warning("No extract details provided, skipping data element mappings.")
+        return df
 
+    # Loop over the configured data element mappings to filter by COC/AOC if provided
+    current_run.log_info("Applying data element mappings.")
+    chunks = []
+    for uid, mapping in extract_mappings.items():
+        uid_mapping = mapping.get("DX_UID")
+        coc_mapping = mapping.get("CATEGORY_OPTION_COMBO")
+        aoc_mapping = mapping.get("ATTRIBUTE_OPTION_COMBO")
 
-def compute_mean_and_format_results(period_results: pl.DataFrame, period: str) -> pl.DataFrame:
-    """Computes the mean of indicator values for each organisation unit and formats the results for output.
+        # select indicator data
+        df_indicator = df.filter(pl.col("indicator") == uid)
+        if coc_mapping:
+            df_indicator = df_indicator.with_columns(pl.lit(coc_mapping.strip()).alias("category_option_combo"))
+        if aoc_mapping:
+            df_indicator = df_indicator.with_columns(pl.lit(aoc_mapping.strip()).alias("attribute_option_combo"))
+        if uid_mapping:
+            df_indicator = df_indicator.with_columns(pl.lit(uid_mapping.strip()).alias("dx"))
 
-    Args:
-        period_results: DataFrame containing per-period indicator values to aggregate.
-        period: The period string to stamp on the formatted output rows.
+        chunks.append(df_indicator)
 
-    Returns:
-        Formatted DataFrame with mean values and required columns for output.
-    """
+    if len(chunks) == 0:
+        current_run.log_warning("No data elements matched the provided mappings, returning empty dataframe.")
+        logger.warning("No data elements matched the provided mappings, returning empty dataframe.")
+        return pl.DataFrame(schema=df.schema)
+
     return (
-        period_results.group_by(["ORG_UNIT", "indicator"])
-        .agg(pl.col("VALUE").mean().alias("VALUE"))
-        .with_columns(
-            [
-                pl.lit("CMM_INDICATOR").alias("DATA_TYPE"),
-                pl.lit(period).alias("PERIOD"),
-                pl.lit(None).alias("DX_UID"),
-                pl.lit(None).alias("CATEGORY_OPTION_COMBO"),
-                pl.lit(None).alias("ATTRIBUTE_OPTION_COMBO"),
-                pl.col("indicator").str.to_uppercase().alias("INDICATOR"),
-            ]
-        )
-        .select(
-            [
-                "DATA_TYPE",
-                "DX_UID",
-                "PERIOD",
-                "CATEGORY_OPTION_COMBO",
-                "ATTRIBUTE_OPTION_COMBO",
-                "ORG_UNIT",
-                "VALUE",
-                "INDICATOR",
-            ]
-        )
+        pl.concat(chunks)
+        .with_columns(pl.when(pl.col("value").abs() >= 1e-9).then(pl.col("value")).otherwise(0).round(4).alias("value"))
+        .sort(by="org_unit")
+        .with_columns(pl.col("value").cast(pl.Utf8))  # push class handles only string values.
     )
 
 
@@ -609,6 +560,29 @@ def get_files_from_dataset(dataset_id: str, output_path: Path) -> None:
             current_run.log_info(f"Loading file: {fname}")
             df_data = get_file_from_dataset(dataset_id=dataset_id, filename=fname)
             save_to_parquet(data=df_data, filename=output_path / "extracts" / "data_elements" / key / fname)
+
+
+def update_last_run_timestamp(timestamp_filename: Path, dataset_id: str, run_task: bool) -> None:
+    """Updates the last run timestamp in the JSON file.
+
+    Args:
+        timestamp_filename: Path to the JSON file storing the last run timestamp.
+        dataset_id: The ID of the dataset whose latest version timestamp will be saved.
+        run_task: Boolean indicating whether to run the update task or skip it.
+    """
+    if not run_task:
+        current_run.log_info("Last run timestamp update task skipped.")
+        return
+
+    timestamp = get_dataset_version_timestamp(dataset_id=dataset_id)
+    try:
+        save_json_file(
+            file_path=timestamp_filename,
+            contents={"LAST_UPDATE": timestamp.strftime("%Y%m%d_%H%M")},
+        )
+        current_run.log_info(f"Last run timestamp updated to: {timestamp.strftime('%Y%m%d_%H%M')}")
+    except Exception as e:
+        current_run.log_error(f"Error updating last run timestamp: {e}")
 
 
 if __name__ == "__main__":
