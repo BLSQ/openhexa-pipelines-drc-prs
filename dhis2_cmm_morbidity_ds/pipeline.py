@@ -39,38 +39,39 @@ from utils import (
     code="start_date",
     name="Start date (format: YYYYMM)",
     type=str,
-    required=False,
     help=(
         "Start date for data extraction in YYYYMM format. "
         "If not set, it will default to current date minus NUMBER_MONTHS_WINDOW."
     ),
+    required=False,
     default=None,
 )
 @parameter(
     code="end_date",
     name="End date (format: YYYYMM)",
     type=str,
-    required=False,
     help=(
         "End date for data extraction in YYYYMM format. "
         "If not set, it will default to current date minus NUMBER_MONTHS_WINDOW."
     ),
+    required=False,
     default=None,
 )
 @parameter(
     code="run_ou_sync",
     name="Run org units sync (recommended)",
     type=bool,
-    default=True,
     help="Run organisation units alignment between source and target DHIS2.",
+    default=True,
     required=True,
 )
 @parameter(
     code="run_push_data",
     name="Push data",
     type=bool,
-    default=True,
     help="Push data to target DHIS2.",
+    default=True,
+    required=False,
 )
 @parameter(
     code="load_ds_files",
@@ -144,7 +145,7 @@ def dhis2_cmm_morbidity_ds(
         update_last_run_timestamp(
             timestamp_filename=pipeline_path / "configuration" / "last_update.json",
             dataset_id=dataset_id,
-            run_task=run_push_data,
+            run_task=run_push_data and not config.get("SETTINGS", {}).get("DRY_RUN", True),
         )
     else:
         current_run.log_info("No new data version detected. Pipeline execution skipped.")
@@ -391,6 +392,11 @@ def push_data(
     """Pushes data elements to the target DHIS2 instance."""
     if not run_task:
         current_run.log_info("Data push task skipped.")
+        return
+
+    if len(files_to_push) == 0:
+        current_run.log_info("No files to push, skipping data push.")
+        return
 
     current_run.log_info("Starting data push.")
 
