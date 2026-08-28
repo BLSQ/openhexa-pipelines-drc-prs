@@ -74,10 +74,11 @@ Each formula is a small expression tree (`sum` / `multiply` / `constant` / `if o
 ### Expected results
 
 - Raw inputs cached as parquet under `data/pyramid/`, `data/org_unit_groups/`, `data/extracts/data_elements/fosa_morbidity/`.
+- Data push cache stored under `cache/cmm_push/` by default (to avoid re-importing datapoints).
 - One computed indicator file per period under `data/cmm_morbidity/fosa_morbidity/cmm_morbidity_<YYYYMM>.parquet`.
 - Org unit pyramid and org unit groups on the target DHIS2 kept aligned with the source.
 - CMM indicator values pushed as data values to the target DHIS2 at FOSA level (unless `DRY_RUN` is `true` in `push_config.json`, or `run_push_data` is `False`).
-- `configuration/last_update.json` updated to the latest processed dataset version.
+- `configuration/last_update.json` updated to the latest processed dataset version (skip execution based on dataset version timestamp).
 - Logs per task under `logs/ou_sync/`, `logs/oug_sync/`, `logs/push/`.
 
 ### Notes
