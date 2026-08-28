@@ -106,7 +106,10 @@ def dhis2_cmm_morbidity_ds(
     )
 
     if to_update or force_run:
-        current_run.log_info("New data version detected. Starting pipeline execution...")
+        if to_update:
+            current_run.log_info("New data version detected. Starting pipeline execution...")
+        if force_run:
+            current_run.log_info("Force run enabled. Starting pipeline execution regardless of data version...")
         if load_ds_files:
             try:
                 get_files_from_dataset(dataset_id=dataset_id, output_path=pipeline_path / "data")
