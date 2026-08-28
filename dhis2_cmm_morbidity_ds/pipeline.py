@@ -30,6 +30,7 @@ from utils import (
 
 # Ticket(s) related to this pipeline:
 #   - https://bluesquare.atlassian.net/browse/SAN-126 (OLD Pipeline)
+#   - https://bluesquare.atlassian.net/browse/PATHEOC-414
 # github repo:
 #   -https://github.com/BLSQ/openhexa-pipelines-drc-prs
 
