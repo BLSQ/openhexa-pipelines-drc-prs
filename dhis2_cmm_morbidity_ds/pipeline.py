@@ -131,6 +131,13 @@ def dhis2_cmm_morbidity_ds(
             run_task=run_ou_sync,
         )
 
+        sync_dataset_organisation_units(
+            pipeline_path=pipeline_path,
+            config=config,
+            sync_config=read_json_file(pipeline_path / "configuration" / "sync_config.json"),
+            run_task=run_ou_sync,
+        )
+
         files_to_push = compute_cmm_morbidity_indicators(
             pipeline_path=pipeline_path,
             start_date=start_date,
@@ -298,6 +305,118 @@ def sync_org_units_groups(
         logger.error(msg)
     else:
         msg = f"organisation unit group '{oug_payload['name']}' ({target_oug_id}) org units set: {len(source_ous)}"
+        current_run.log_info(msg)
+        logger.info(msg)
+
+
+def sync_dataset_organisation_units(
+    pipeline_path: Path,
+    config: dict,
+    sync_config: dict,
+    run_task: bool,
+) -> None:
+    """Syncs organisation units between source and target datasets in DHIS2.
+
+    NOTE: This is PRS specific.
+    """
+    if not run_task:
+        current_run.log_info("Dataset organisation units sync task skipped.")
+        return
+
+    current_run.log_info("Starting dataset organisation units sync.")
+    logger, logs_file = configure_logging_flush(logs_path=Path("/home/jovyan/tmp/logs"), task_name="ds_oug_sync")
+    # logger, logs_file = configure_logging_flush(logs_path=pipeline_path / "logs", task_name="ds_oug_sync")  ## local
+
+    # connect to target DHIS2
+    target_dhis2 = connect_to_dhis2(connection_str=config.get("SETTINGS", {}).get("TARGET_DHIS2_CONNECTION"))
+    current_run.log_info(f"Connected to DHIS2: {target_dhis2.api.url}")
+
+    # get all FOSA org units to be pushed to the target dataset
+    source_pyramid = read_parquet_extract(pipeline_path / "data" / "pyramid" / "pyramid_data.parquet")
+    org_units = source_pyramid.filter(pl.col("level") == 5)["id"].to_list()  # level 5 are FOSA
+    if not org_units:
+        current_run.log_warning("No org units for sync. Dataset sync skipped.")
+        return
+
+    # Target dataset id
+    target_dataset_id = sync_config.get("DATASET_TARGET_ID")
+    if target_dataset_id is None:
+        current_run.log_warning("No dataset id provided for sync. Dataset sync skipped.")
+        return
+
+    try:
+        align_dataset_org_units(
+            target_dhis2=target_dhis2,
+            target_dataset_id=target_dataset_id,
+            new_org_units=org_units,
+            logger=logger,
+        )
+    except Exception as e:
+        current_run.log_error(f"Error syncing dataset organisation units of '{target_dataset_id}': {e}")
+        logger.error(f"Error syncing dataset organisation units of '{target_dataset_id}': {e}")
+        raise
+    finally:
+        save_logs(logs_file, output_dir=pipeline_path / "logs" / "ds_oug_sync")
+
+
+def align_dataset_org_units(
+    target_dhis2: DHIS2,
+    target_dataset_id: str | None = None,
+    new_org_units: list[str] | None = None,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Aligns organisation units of datasets between source and target DHIS2 connections.
+
+    Args:
+        target_dhis2: DHIS2 client for the target instance.
+        target_dataset_id: The ID of the target dataset to update.
+            If None, the function will log a msg and skip the update.
+        new_org_units: List of organisation unit IDs to set for the target dataset.
+        logger: Logger instance for logging. Defaults to a module-level logger if None.
+    """
+    # GET current dataset
+    url = f"{target_dhis2.api.url}/dataSets/{target_dataset_id}"
+    dataset_payload = dhis2_request(session=target_dhis2.api.session, method="get", url=url)
+
+    if not dataset_payload or "error" in dataset_payload:
+        error_msg = dataset_payload.get("error", "Unknown error") if dataset_payload else "No response from DHIS2"
+        current_run.log_error(f"Error retrieving dataset {target_dataset_id}: {error_msg}")
+        logger.error(f"Error retrieving dataset {target_dataset_id}: {error_msg}")
+        return
+
+    target_ou_ids = [d.get("id") for d in dataset_payload["organisationUnits"]]
+    target_ds_name = dataset_payload.get("name", "Unknown Dataset")
+
+    ous_to_add = set(new_org_units) - set(target_ou_ids)
+    if not ous_to_add:
+        msg = (
+            f"Target dataset '{target_ds_name}' (id: {target_dataset_id}) "
+            f"(ous: {len(set(target_ou_ids))}) contains all expected OUS. No update needed."
+        )
+        current_run.log_info(msg)
+        logger.info(msg)
+        return
+
+    # Compare source vs target datasets and update org units list if needed
+    msg = (
+        f"Updating target dataset '{target_ds_name}' (id: {target_dataset_id}): "
+        f"{len(set(target_ou_ids))} existing OU(s) -> {len(new_org_units)} OU(s) requested "
+        f"({len(ous_to_add)} new OU(s) being added)"
+    )
+    current_run.log_info(msg)
+    logger.info(msg)
+
+    update_ous = set(target_ou_ids) | set(ous_to_add)  # sum old + new OUs
+    dataset_payload["organisationUnits"] = [{"id": ou_id} for ou_id in update_ous]  # add new org units (additive)
+
+    # PUT updated dataset
+    update_response = dhis2_request(target_dhis2.api.session, "put", url, json=dataset_payload)
+    if "error" in update_response:
+        msg = f"Error updating dataset {target_ds_name} (id: {target_dataset_id}) - Error: {update_response['error']}"
+        current_run.log_error(msg)
+        logger.error(msg)
+    else:
+        msg = f"Dataset {target_ds_name} (id: {target_dataset_id}) updated: {len(ous_to_add)} new OU(s) added."
         current_run.log_info(msg)
         logger.info(msg)
 
