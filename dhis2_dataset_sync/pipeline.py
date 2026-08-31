@@ -8,7 +8,7 @@ import pandas as pd
 import polars as pl
 import requests
 from d2d_development.push import DHIS2Pusher
-from d2d_library.dhis2_org_unit_aligner import DHIS2PyramidAligner
+from d2d_library.org_unit_aligner import DHIS2PyramidAligner
 from openhexa.sdk import current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
 from openhexa.toolbox.dhis2.dataframe import get_datasets
@@ -466,15 +466,6 @@ def push_data(
     logger.info(params_msg)
     current_run.log_info(params_msg)
 
-    # Set up DHIS2 pusher
-    pusher = DHIS2Pusher(
-        dhis2_client=target_dhis2,
-        import_strategy=import_strategy,
-        dry_run=dry_run,
-        max_post=max_post,
-        logger=logger,
-    )
-
     # Get the list of files to push from the dataset
     update_files = get_file_from_dataset(dataset_id=dataset_id, filename="updates_collector.json")
     update_files.pop("pyramid", None)  # Remove the pyramid node
@@ -497,6 +488,16 @@ def push_data(
                     f"Failed to retrieve dataset info for {extract_config.get('TARGET_DATASET_UID')}. Error: {e}"
                 )
                 continue
+
+        # Set up DHIS2 pusher
+        pusher = DHIS2Pusher(
+            dhis2_client=target_dhis2,
+            import_strategy=import_strategy,
+            dry_run=dry_run,
+            max_post=max_post,
+            logger=logger,
+            cache_path=pipeline_path / "cache" / extract_id,
+        )
 
         # Loop over the files in the dataset
         for fname in fnames:
