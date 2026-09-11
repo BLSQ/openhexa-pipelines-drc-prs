@@ -241,10 +241,7 @@ def align_org_units(
     """
     DHIS2PyramidAligner(logger).align_to(
         target_dhis2=target_dhis2,
-        source_pyramid=read_parquet_extract(
-            pipeline_path / "data" / "pyramid" / "snis_prs_pyramid.parquet"
-        ).to_pandas(),  # NOTE: This needs rework to support polars under the hood.
-        dry_run=False,  # NOTE: This has no effect, the org units will be created regardless if True or False
+        source_pyramid=read_parquet_extract(pipeline_path / "data" / "pyramid" / "snis_prs_pyramid.parquet"),
     )
 
 

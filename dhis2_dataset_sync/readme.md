@@ -2,62 +2,61 @@
 
 ### Overview
 
-This pipeline automates the synchronization of datasets, organizational units, and data elements between DHIS2 instances. It aligns org units, synchronizes dataset org units, extracts and pushes data elements, and optionally syncs dataset completion statuses.
+This pipeline synchronizes organisation units and DATA_ELEMENT data between two DHIS2 instances (source SNIS → target PRS). It aligns the organisation unit pyramid, aligns dataset organisation units, and pushes data element extracts to the target instance.
 
-### Main Features
+It consumes pyramid and data element extract files published as an OpenHEXA dataset by the upstream **`dhis2-prs-dataset-extract`** pipeline (DRC SNIS workspace), and only runs when a new version of that dataset is detected (unless forced).
 
-#### 1. Organization Unit Synchronization
+Note: this pipeline does **not** perform data extraction itself, and does **not** sync dataset completion statuses — that is handled by the separate `dhis2_dataset_sync_completions` pipeline, which consumes files produced by the data push step below.
 
-- **sync_organisation_units**: Aligns org units between source and target DHIS2, extracts pyramid data, and saves it for validation.
-- Uses selection, inclusion of children, and level limits from `sync_config.json`.
+### Data Flow
 
-#### 2. Dataset Organization Unit Sync
+```mermaid
+flowchart LR
+    A["dhis2-prs-dataset-extract<br/>(DRC SNIS workspace)"] -->|"publishes pyramid &amp;<br/>data element extracts"| B[("OpenHEXA Dataset")]
+    B --> S
 
-- **sync_dataset_organisation_units**: Aligns org units for datasets between source and target DHIS2, using mappings from `sync_config.json`.
-- Handles special cases for full pyramid and zones de santé datasets.
+    subgraph S["dhis2_dataset_sync pipeline"]
+        direction LR
+        C1["sync_organisation_units"] --> C2["sync_dataset_organisation_units"] --> C3["push_data"]
+    end
 
-#### 3. Data Extraction
+    C3 -->|"org units per dataset"| D["dhis2_dataset_sync_completions pipeline"]
+```
 
-- **extract_data**: Extracts data elements from the source DHIS2 based on configuration in `extract_config.json`.
-- Extraction is performed for specified periods and org units, with settings for window, start/end dates, and mode.
-- Data is saved in parquet format for efficient processing.
+### Pipeline Parameters
 
-#### 4. Data Push
+- **run_ou_sync** (default `True`): Runs the organisation units and dataset organisation units sync tasks.
+- **run_push_data** (default `True`): Runs the data push task.
+- **load_ds_files** (default `True`): Downloads the pyramid/extract files from the OpenHEXA dataset before processing.
+- **force_run** (default `False`): Forces the pipeline to run even if no new dataset version is detected.
 
-- **push_data**: Pushes extracted data elements to the target DHIS2 instance, using mappings from `push_config.json`.
-- Supports batching, dry-run mode, and custom import strategies.
-- Applies mapping functions to format data elements for import and filters by dataset org units.
+### Execution Flow
 
-#### 5. Dataset Completion Sync (Optional)
+1. **should_push_data**: Checks whether the input OpenHEXA dataset (`OPENHEXA_DATASET_ID`) has a new version since the last run. If not (and `force_run` is `False`), the pipeline exits early.
+2. **get_files_from_dataset** *(optional, `load_ds_files`)*: Downloads the pyramid and data element extract files published by `dhis2-prs-dataset-extract`.
+3. **sync_organisation_units**: Aligns the organisation unit pyramid onto the target DHIS2 (`DHIS2PyramidAligner`), using the already-filtered pyramid extract (`data/pyramid/snis_prs_pyramid.parquet`).
+4. **sync_dataset_organisation_units**: Aligns organisation units of mapped datasets between source and target, using `DATASETS` mappings from `sync_config.json`. Handles special `FULL_PYRAMID` and `ZONES_SANTE` cases.
+5. **push_data**: Pushes DATA_ELEMENT extracts to the target DHIS2 using mappings, import strategy and dry-run mode from `push_config.json`. Also writes per-dataset org unit files consumed by the `dhis2_dataset_sync_completions` pipeline.
+6. **update_last_run_timestamp**: Records the processed dataset version so the next run can detect changes.
 
-- **sync_dataset_statuses**: Syncs dataset completion statuses between source and target DHIS2, using backup data from previous pushes.
+### Push Cache
+
+`push_data` uses a `DHIS2Pusher` (per `EXTRACT_UID`, cached under `cache/<extract_id>/cache_<period>.parquet`) that tracks which datapoints (`dx`, `period`, `org_unit`, `category_option_combo`, `attribute_option_combo`, `value`) have already been pushed. On each run it filters out datapoints whose value is unchanged since the last successful push, so only new or changed values are sent to the target DHIS2. The cache is updated only after a push is confirmed (rejected datapoints are excluded), and is skipped entirely when `DRY_RUN` is `true`.
+
+This caching is separate from the DHIS2 API client's own metadata cache (`connect_to_dhis2(..., cache_dir=...)`), which this pipeline does not use — org unit and data push connections are always created without a client-side cache.
 
 ### Configuration
 
-- **extract_config.json**: Defines source connection, extraction window, data elements, org unit level, and frequency.
-- **push_config.json**: Specifies target connection, import strategy, dry-run mode, max post size, and mappings for data elements.
-- **sync_config.json**: Controls org unit selection, dataset mappings, and pyramid/zones de santé handling.
+- **extract_config.json**: Only `SETTINGS.SOURCE_DHIS2_CONNECTION` is read (by the dataset organisation units sync step). Other keys (data elements, extraction window, org unit levels) belong to the upstream `dhis2-prs-dataset-extract` pipeline, not this one.
+- **push_config.json**: Target connection, import strategy, dry-run mode, max post size, `OPENHEXA_DATASET_ID`, and mappings for data elements.
+- **sync_config.json**: `DATASETS` mapping used for dataset organisation units sync. The `ORG_UNITS` section (selection, group UIDs, level limits) is not read by this pipeline — it is consumed by the upstream `dhis2-prs-dataset-extract` pipeline that produces the pre-filtered pyramid.
 
-#### Example Extract Configuration
+#### Example Extract Configuration (source connection only is used here)
 
 ```json
 {
 	"SETTINGS": {
-		"SOURCE_DHIS2_CONNECTION": "drc-snis",
-		"NUMBER_MONTHS_WINDOW": 4,
-		"STARTDATE": "",
-		"ENDDATE": "",
-		"MODE": "DOWNLOAD_REPLACE"
-	},
-	"DATA_ELEMENTS": {
-		"EXTRACTS": [
-			{
-				"EXTRACT_UID": "level_zs",
-				"UIDS": [...],
-				"ORG_UNITS_LEVEL": 3,
-				"FREQUENCY": "MONTHLY"
-			}
-		]
+		"SOURCE_DHIS2_CONNECTION": "drc-snis"
 	}
 }
 ```
@@ -71,7 +70,7 @@ This pipeline automates the synchronization of datasets, organizational units, a
 		"IMPORT_STRATEGY": "CREATE_AND_UPDATE",
 		"DRY_RUN": false,
 		"MAX_POST": 5000,
-		"PUSH_WAIT_MINUTES": 5
+		"OPENHEXA_DATASET_ID": "..."
 	},
 	"DATA_ELEMENTS": {
 		"EXTRACTS": [
@@ -79,7 +78,6 @@ This pipeline automates the synchronization of datasets, organizational units, a
 				"EXTRACT_UID": "level_zs",
 				"SOURCE_DATASET_UID": "k8mWHTAqHYZ",
 				"TARGET_DATASET_UID": "jp5eWxb66XT",
-				"SYNC_PERIOD_WINDOW": 4,
 				"MAPPINGS": { ... }
 			}
 		]
@@ -91,14 +89,6 @@ This pipeline automates the synchronization of datasets, organizational units, a
 
 ```json
 {
-	"ORG_UNITS": {
-		"SELECTION": {
-			"UIDS": [...],
-			"INCLUDE_CHILDREN": true,
-			"LIMIT_LEVEL": 5
-		},
-		"ORG_UNITS_GROUPS": { "UIDS": [] }
-	},
 	"DATASETS": {
 		"DxDuYrrZSa7": ["wMCnDAQfGZN"],
 		"FULL_PYRAMID": ["dbf1uGX1XU3"],
@@ -107,12 +97,8 @@ This pipeline automates the synchronization of datasets, organizational units, a
 }
 ```
 
-### Data Flow
-
-1. **Sync org units** → 2. **Sync dataset org units** → 3. **Extract data** → 4. **Push data** → 5. *(Optional)* **Sync dataset completion**
-
 ### Usage
 
-1. Configure extraction, push, and sync settings in the JSON files.
-2. Run the pipeline to synchronize org units, datasets, extract and push data, and optionally sync completion statuses.
-3. Review logs for each step in the respective logs directory.
+1. Configure the source/target connections and mappings in the JSON files under `configuration/`.
+2. Run the pipeline to align org units, align dataset org units, and push data element extracts.
+3. Review logs for each step under the respective `logs/` subdirectory.
